@@ -370,6 +370,9 @@ importers:
 
   drizzle-orm:
     dependencies:
+      '@sap/hana-client':
+        specifier: ^2.27.19
+        version: 2.27.19
       '@types/mssql':
         specifier: ^9.1.4
         version: 9.1.8
@@ -738,6 +741,9 @@ importers:
       '@prisma/client':
         specifier: 5.14.0
         version: 5.14.0(prisma@5.14.0)
+      '@sap/hana-client':
+        specifier: ^2.27.19
+        version: 2.27.19
       '@sqlitecloud/drivers':
         specifier: ^1.0.653
         version: 1.0.653(@craftzdog/react-native-buffer@6.1.1(react-native@0.82.1(@babel/core@7.28.5)(bufferutil@4.0.8)(react@18.3.1)(utf-8-validate@6.0.3))(react@18.3.1))(bufferutil@4.0.8)(react-native-quick-base64@2.2.2(react-native@0.82.1(@babel/core@7.28.5)(bufferutil@4.0.8)(react@18.3.1)(utf-8-validate@6.0.3))(react@18.3.1))(react-native-tcp-socket@6.3.0(react-native@0.82.1(@babel/core@7.28.5)(bufferutil@4.0.8)(react@18.3.1)(utf-8-validate@6.0.3)))(react-native-url-polyfill@3.0.0(react-native@0.82.1(@babel/core@7.28.5)(bufferutil@4.0.8)(react@18.3.1)(utf-8-validate@6.0.3)))(utf-8-validate@6.0.3)
@@ -937,7 +943,7 @@ importers:
         version: typescript@5.9.3
       tsnext:
         specifier: npm:typescript@next
-        version: typescript@6.0.0-dev.20251126
+        version: typescript@6.0.0-dev.20251219
 
 packages:
 
@@ -3049,6 +3055,10 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@sap/hana-client@2.27.19':
+    resolution: {integrity: sha512-Bqx9isM8uW/ud/jLqUh7BCHnoTor6hwuC4fOtOxPub00oHQ6LNExLnOrofFskom+4V0po1303dJ8geXlStdFuw==}
+    engines: {node: '>=4.0.0'}
+
   '@sinclair/typebox@0.27.8':
     resolution: {integrity: sha512-+Fj43pSMwJs4KRrH/938Uf+uAELIgVBmQzg/q1YG10djyfA3TnrU8N8XzqCh/okZdszqBQTZf96idMfE5lnwTA==}
 
@@ -4361,6 +4371,14 @@ packages:
 
   debug@2.6.9:
     resolution: {integrity: sha512-bC7ElrdJaJnPbAP+1EotYvqZsb3ecl5wi6Bfi6BJTUcNowp6cvspg0jXznRTKDjm/E7AdgFBVeAPVMNcKGsHMA==}
+    peerDependencies:
+      supports-color: '*'
+    peerDependenciesMeta:
+      supports-color:
+        optional: true
+
+  debug@3.1.0:
+    resolution: {integrity: sha512-OX8XqP7/1a9cqkxYw2yXss15f26NKWBpDXQd0/uK/KPqdQhxbPa994hnzjcE2VqQpDslf55723cKPUOGSmMY3g==}
     peerDependencies:
       supports-color: '*'
     peerDependenciesMeta:
@@ -8089,8 +8107,8 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
-  typescript@6.0.0-dev.20251126:
-    resolution: {integrity: sha512-9B5gGo9qwa7Mj8aKFUQEqvd1zF5AbYZShA3qcePcJjVYTEc59Wfjydb67qHw/OWby3PnjQ0hd9miXybQhNToWg==}
+  typescript@6.0.0-dev.20251219:
+    resolution: {integrity: sha512-1T2oKEWiyUPfFnDL9f61hpHOWEytJFT1SRlAHbI3BZnoGuAbpX/JKHfz2xmSpGAizQMyv+Fx2VHGWnDpKMBydg==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -11409,6 +11427,12 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.53.3':
     optional: true
 
+  '@sap/hana-client@2.27.19':
+    dependencies:
+      debug: 3.1.0
+    transitivePeerDependencies:
+      - supports-color
+
   '@sinclair/typebox@0.27.8': {}
 
   '@sinclair/typebox@0.34.41': {}
@@ -13111,6 +13135,10 @@ snapshots:
       time-zone: 1.0.0
 
   debug@2.6.9:
+    dependencies:
+      ms: 2.0.0
+
+  debug@3.1.0:
     dependencies:
       ms: 2.0.0
 
@@ -17276,7 +17304,7 @@ snapshots:
 
   typescript@5.9.3: {}
 
-  typescript@6.0.0-dev.20251126: {}
+  typescript@6.0.0-dev.20251219: {}
 
   ufo@1.6.1: {}
 

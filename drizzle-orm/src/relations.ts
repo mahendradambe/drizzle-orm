@@ -755,6 +755,12 @@ export function mapRelationalRow(
 			}
 
 			if (selectionItem.isArray) {
+				if (parseJsonIfString) {
+					row[selectionItem.key] = (row[selectionItem.key] as Array<Record<string, unknown>>).filter((i) =>
+						!Object.values(i).every((v) => v === null)
+					);
+				}
+
 				for (const item of (row[selectionItem.key] as Array<Record<string, unknown>>)) {
 					mapRelationalRow(
 						item,

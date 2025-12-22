@@ -2,6 +2,7 @@ import { entityKind } from '~/entity.ts';
 import type { CockroachColumn, ExtraConfigColumn as CockroachExtraConfigColumn } from './cockroach-core/index.ts';
 import type { Column, ColumnBaseConfig } from './column.ts';
 import type { GelColumn, GelExtraConfigColumn } from './gel-core/index.ts';
+import type { HanaColumn } from './hana-core/index.ts';
 import type { MsSqlColumn } from './mssql-core/index.ts';
 import type { MySqlColumn } from './mysql-core/index.ts';
 import type { ExtraConfigColumn, PgColumn, PgSequenceOptions } from './pg-core/index.ts';
@@ -118,7 +119,7 @@ export function extractExtendedColumnType<TColumn extends Column>(
 	return { type, constraint } as any;
 }
 
-export type Dialect = 'pg' | 'mysql' | 'sqlite' | 'singlestore' | 'mssql' | 'common' | 'gel' | 'cockroach';
+export type Dialect = 'pg' | 'mysql' | 'sqlite' | 'singlestore' | 'mssql' | 'common' | 'gel' | 'cockroach' | 'hana';
 
 // TODO update description
 // 'virtual' | 'stored'  for postgres
@@ -403,6 +404,7 @@ export type BuildColumn<
 	: TDialect extends 'singlestore' ? SingleStoreColumn<TBuiltConfig, {}>
 	: TDialect extends 'gel' ? GelColumn<TBuiltConfig, {}>
 	: TDialect extends 'cockroach' ? CockroachColumn<TBuiltConfig, {}>
+	: TDialect extends 'hana' ? HanaColumn<TBuiltConfig, {}>
 	: TDialect extends 'common' ? Column<TBuiltConfig, {}>
 	: never;
 
@@ -455,4 +457,5 @@ export type ChangeColumnTableName<
 	: TDialect extends 'gel' ? GelColumn<MakeColumnConfig<TColumn['_'], TAlias>>
 	: TDialect extends 'mssql' ? MsSqlColumn<MakeColumnConfig<TColumn['_'], TAlias>>
 	: TDialect extends 'cockroach' ? CockroachColumn<MakeColumnConfig<TColumn['_'], TAlias>>
+	: TDialect extends 'hana' ? HanaColumn<MakeColumnConfig<TColumn['_'], TAlias>>
 	: never;
