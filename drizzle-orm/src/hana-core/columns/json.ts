@@ -30,7 +30,7 @@ export class HanaJson<T extends ColumnBaseConfig<'object json'>> extends HanaCol
 	}
 
 	getSQLType(): string {
-		return 'json';
+		return 'nclob';
 	}
 
 	override mapToDriverValue(value: T['data']): string {

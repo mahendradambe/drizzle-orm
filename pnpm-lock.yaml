@@ -370,9 +370,6 @@ importers:
 
   drizzle-orm:
     dependencies:
-      '@sap/hana-client':
-        specifier: ^2.27.19
-        version: 2.27.19
       '@types/mssql':
         specifier: ^9.1.4
         version: 9.1.8
@@ -419,6 +416,9 @@ importers:
       '@prisma/client':
         specifier: 5.14.0
         version: 5.14.0(prisma@5.14.0)
+      '@sap/hana-client':
+        specifier: ^2.27.19
+        version: 2.27.19
       '@sqlitecloud/drivers':
         specifier: ^1.0.653
         version: 1.0.653(@craftzdog/react-native-buffer@6.1.1(react-native@0.82.1(@babel/core@7.28.5)(@types/react@18.3.27)(bufferutil@4.0.8)(react@18.3.1)(utf-8-validate@6.0.3))(react@18.3.1))(bufferutil@4.0.8)(react-native-quick-base64@2.2.2(react-native@0.82.1(@babel/core@7.28.5)(@types/react@18.3.27)(bufferutil@4.0.8)(react@18.3.1)(utf-8-validate@6.0.3))(react@18.3.1))(react-native-tcp-socket@6.3.0(react-native@0.82.1(@babel/core@7.28.5)(@types/react@18.3.27)(bufferutil@4.0.8)(react@18.3.1)(utf-8-validate@6.0.3)))(react-native-url-polyfill@3.0.0(react-native@0.82.1(@babel/core@7.28.5)(@types/react@18.3.27)(bufferutil@4.0.8)(react@18.3.1)(utf-8-validate@6.0.3)))(utf-8-validate@6.0.3)

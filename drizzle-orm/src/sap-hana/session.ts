@@ -231,6 +231,26 @@ export class SapHanaSession<
 		);
 	}
 
+	async executeBatch(queryString: string, paramRows: unknown[][]): Promise<unknown> {
+		this.logger.logQuery(queryString, []);
+		return tracer.startActiveSpan('drizzle.execute', async (span) => {
+			span?.setAttributes({
+				'drizzle.query.text': queryString,
+				'drizzle.query.params': JSON.stringify(paramRows),
+			});
+			return new Promise((resolve, reject) => {
+				this.client.prepare(queryString, (err: Error | null, stmt: any) => {
+					if (err) return reject(err);
+					stmt.execBatch(paramRows as HanaParameterType[][], (err: Error | null, result: any) => {
+						stmt.drop();
+						if (err) return reject(err);
+						resolve(result);
+					});
+				});
+			});
+		});
+	}
+
 	override async transaction<T>(
 		transaction: (tx: SapHanaTransaction<TFullSchema, TRelations, TSchema>) => Promise<T>,
 		config?: HanaTransactionConfig | undefined,

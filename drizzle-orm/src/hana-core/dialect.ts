@@ -66,8 +66,8 @@ export class HanaDialect {
 		return `"${name}"`;
 	}
 
-	escapeParam(num: number): string {
-		return `$${num + 1}`;
+	escapeParam(_num: number): string {
+		return `?`;
 	}
 
 	escapeString(str: string): string {
@@ -557,7 +557,7 @@ export class HanaDialect {
 								: sql.param(onUpdateFnResult, col);
 							valueList.push(newValue);
 						} else {
-							valueList.push(sql`default`);
+							valueList.push(sql`NULL`);
 						}
 					} else {
 						valueList.push(colValue);
@@ -580,6 +580,66 @@ export class HanaDialect {
 			: undefined;
 
 		return sql`${withSql}insert into ${table} ${insertOrder} ${overridingSql}${valuesSql}`;
+	}
+
+	buildBatchInsertQuery(
+		config: HanaInsertConfig,
+	): { sql: string; paramRows: unknown[][] } | null {
+		const { table, values: valuesOrSelect, withList, select, overridingSystemValue_ } = config;
+
+		// Only batch for multi-row array values (not select subqueries)
+		if (select) return null;
+		const values = valuesOrSelect as Record<string, Param | SQL>[];
+		if (values.length <= 1) return null;
+
+		const columns: Record<string, HanaColumn> = table[Table.Symbol.Columns];
+		const colEntries: [string, HanaColumn][] = Object.entries(columns)
+			.filter(([_, col]) => !col.shouldDisableInsert());
+
+		// Extract per-row params, resolving defaults
+		const paramRows: unknown[][] = [];
+		for (const value of values) {
+			const row: unknown[] = [];
+			for (const [fieldName, col] of colEntries) {
+				const colValue = value[fieldName];
+				if (
+					colValue === undefined
+					|| (is(colValue, Param) && colValue.value === undefined)
+				) {
+					if (col.defaultFn !== undefined) {
+						const result = col.defaultFn();
+						if (is(result, SQL)) return null;
+						row.push(col.mapToDriverValue(result));
+					} else if (!col.default && col.onUpdateFn !== undefined) {
+						const result = col.onUpdateFn();
+						if (is(result, SQL)) return null;
+						row.push(col.mapToDriverValue(result));
+					} else {
+						row.push(null);
+					}
+				} else if (is(colValue, Param)) {
+					row.push(colValue.value === undefined ? null : col.mapToDriverValue(colValue.value));
+				} else {
+					// Raw SQL expression — can't batch
+					return null;
+				}
+			}
+			paramRows.push(row);
+		}
+
+		// Build single-row SQL template: INSERT INTO "table" ("c1", "c2") VALUES (?, ?)
+		const insertOrder = colEntries.map(([, column]) => sql.identifier(this.casing.getColumnCasing(column)));
+		const withSql = this.buildWithCTE(withList);
+		const overridingSql = overridingSystemValue_ === true ? sql`overriding system value ` : undefined;
+
+		const dummyValueList: (SQLChunk | SQL)[] = colEntries.map(([, col]) => new Param(null, col));
+		const valuesSqlList: ((SQLChunk | SQL)[] | SQL)[] = [sql.raw('values '), dummyValueList];
+		const valuesSql = sql.join(valuesSqlList);
+
+		const templateSql = sql`${withSql}insert into ${table} ${insertOrder} ${overridingSql}${valuesSql}`;
+		const query = this.sqlToQuery(templateSql);
+
+		return { sql: query.sql, paramRows };
 	}
 
 	buildRefreshMaterializedViewQuery({

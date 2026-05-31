@@ -49,11 +49,11 @@ export class HanaNumeric<T extends ColumnBaseConfig<'string numeric'>> extends H
 
 	getSQLType(): string {
 		if (this.precision !== undefined && this.scale !== undefined) {
-			return `numeric(${this.precision}, ${this.scale})`;
+			return `decimal(${this.precision}, ${this.scale})`;
 		} else if (this.precision === undefined) {
-			return 'numeric';
+			return 'decimal';
 		} else {
-			return `numeric(${this.precision})`;
+			return `decimal(${this.precision})`;
 		}
 	}
 }
@@ -108,11 +108,11 @@ export class HanaNumericNumber<T extends ColumnBaseConfig<'number'>> extends Han
 
 	getSQLType(): string {
 		if (this.precision !== undefined && this.scale !== undefined) {
-			return `numeric(${this.precision}, ${this.scale})`;
+			return `decimal(${this.precision}, ${this.scale})`;
 		} else if (this.precision === undefined) {
-			return 'numeric';
+			return 'decimal';
 		} else {
-			return `numeric(${this.precision})`;
+			return `decimal(${this.precision})`;
 		}
 	}
 }
@@ -163,11 +163,11 @@ export class HanaNumericBigInt<T extends ColumnBaseConfig<'bigint int64'>> exten
 
 	getSQLType(): string {
 		if (this.precision !== undefined && this.scale !== undefined) {
-			return `numeric(${this.precision}, ${this.scale})`;
+			return `decimal(${this.precision}, ${this.scale})`;
 		} else if (this.precision === undefined) {
-			return 'numeric';
+			return 'decimal';
 		} else {
-			return `numeric(${this.precision})`;
+			return `decimal(${this.precision})`;
 		}
 	}
 }

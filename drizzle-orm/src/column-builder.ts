@@ -15,6 +15,7 @@ export type ColumnDataType =
 	| 'array'
 	| 'bigint'
 	| 'boolean'
+	| 'buffer'
 	| 'custom'
 	| 'number'
 	| 'object'
@@ -75,6 +76,7 @@ export type ColumnDataStringConstraint =
 	| 'interval'
 	| 'macaddr'
 	| 'macaddr8'
+	| 'nclob'
 	| 'numeric'
 	| 'sparsevec'
 	| 'time'
@@ -83,9 +85,12 @@ export type ColumnDataStringConstraint =
 	| 'unumeric'
 	| 'uuid';
 
+export type ColumnDataBufferConstraint = 'blob';
+
 export type ColumnDataConstraint =
 	| ColumnDataArrayConstraint
 	| ColumnDataBigIntConstraint
+	| ColumnDataBufferConstraint
 	| ColumnDataNumberConstraint
 	| ColumnDataObjectConstraint
 	| ColumnDataStringConstraint;
@@ -94,6 +99,7 @@ export type ColumnType =
 	| ColumnDataType
 	| `array ${ColumnDataArrayConstraint}`
 	| `bigint ${ColumnDataBigIntConstraint}`
+	| `buffer ${ColumnDataBufferConstraint}`
 	| `number ${ColumnDataNumberConstraint}`
 	| `object ${ColumnDataObjectConstraint}`
 	| `string ${ColumnDataStringConstraint}`;

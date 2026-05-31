@@ -11,17 +11,15 @@ export class HanaTimestampBuilder extends HanaDateColumnBaseBuilder<
 		data: Date;
 		driverParam: string;
 	},
-	{ withTimezone: boolean; precision: number | undefined }
+	{ precision: number | undefined }
 > {
 	static override readonly [entityKind]: string = 'HanaTimestampBuilder';
 
 	constructor(
 		name: string,
-		withTimezone: boolean,
 		precision: number | undefined,
 	) {
 		super(name, 'object date', 'HanaTimestamp');
-		this.config.withTimezone = withTimezone;
 		this.config.precision = precision;
 	}
 
@@ -34,22 +32,20 @@ export class HanaTimestampBuilder extends HanaDateColumnBaseBuilder<
 export class HanaTimestamp<T extends ColumnBaseConfig<'object date'>> extends HanaColumn<T> {
 	static override readonly [entityKind]: string = 'HanaTimestamp';
 
-	readonly withTimezone: boolean;
 	readonly precision: number | undefined;
 
 	constructor(table: HanaTable<any>, config: HanaTimestampBuilder['config']) {
 		super(table, config);
-		this.withTimezone = config.withTimezone;
 		this.precision = config.precision;
 	}
 
 	getSQLType(): string {
 		const precision = this.precision === undefined ? '' : ` (${this.precision})`;
-		return `timestamp${precision}${this.withTimezone ? ' with time zone' : ''}`;
+		return `timestamp${precision}`;
 	}
 
 	override mapFromDriverValue(value: Date | string): Date {
-		if (typeof value === 'string') return new Date(this.withTimezone ? value : value + '+0000');
+		if (typeof value === 'string') return new Date(value + '+0000');
 
 		return value;
 	}
@@ -66,17 +62,15 @@ export class HanaTimestampStringBuilder extends HanaDateColumnBaseBuilder<
 		data: string;
 		driverParam: string;
 	},
-	{ withTimezone: boolean; precision: number | undefined }
+	{ precision: number | undefined }
 > {
 	static override readonly [entityKind]: string = 'HanaTimestampStringBuilder';
 
 	constructor(
 		name: string,
-		withTimezone: boolean,
 		precision: number | undefined,
 	) {
 		super(name, 'string timestamp', 'HanaTimestampString');
-		this.config.withTimezone = withTimezone;
 		this.config.precision = precision;
 	}
 
@@ -92,31 +86,22 @@ export class HanaTimestampStringBuilder extends HanaDateColumnBaseBuilder<
 export class HanaTimestampString<T extends ColumnBaseConfig<'string timestamp'>> extends HanaColumn<T> {
 	static override readonly [entityKind]: string = 'HanaTimestampString';
 
-	readonly withTimezone: boolean;
 	readonly precision: number | undefined;
 
 	constructor(table: HanaTable<any>, config: HanaTimestampStringBuilder['config']) {
 		super(table, config);
-		this.withTimezone = config.withTimezone;
 		this.precision = config.precision;
 	}
 
 	getSQLType(): string {
 		const precision = this.precision === undefined ? '' : `(${this.precision})`;
-		return `timestamp${precision}${this.withTimezone ? ' with time zone' : ''}`;
+		return `timestamp${precision}`;
 	}
 
 	override mapFromDriverValue(value: Date | string): string {
 		if (typeof value === 'string') return value;
 
-		const shortened = value.toISOString().slice(0, -1).replace('T', ' ');
-		if (this.withTimezone) {
-			const offset = value.getTimezoneOffset();
-			const sign = offset <= 0 ? '+' : '-';
-			return `${shortened}${sign}${Math.floor(Math.abs(offset) / 60).toString().padStart(2, '0')}`;
-		}
-
-		return shortened;
+		return value.toISOString().slice(0, -1).replace('T', ' ');
 	}
 
 	override mapToDriverValue(value: Date | string): string {
@@ -130,7 +115,6 @@ export type Precision = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 export interface HanaTimestampConfig<TMode extends 'date' | 'string' = 'date' | 'string'> {
 	mode?: TMode;
 	precision?: Precision;
-	withTimezone?: boolean;
 }
 
 export function timestamp<TMode extends HanaTimestampConfig['mode'] & {}>(
@@ -143,7 +127,7 @@ export function timestamp<TMode extends HanaTimestampConfig['mode'] & {}>(
 export function timestamp(a?: string | HanaTimestampConfig, b: HanaTimestampConfig = {}) {
 	const { name, config } = getColumnNameAndConfig<HanaTimestampConfig | undefined>(a, b);
 	if (config?.mode === 'string') {
-		return new HanaTimestampStringBuilder(name, config.withTimezone ?? false, config.precision);
+		return new HanaTimestampStringBuilder(name, config.precision);
 	}
-	return new HanaTimestampBuilder(name, config?.withTimezone ?? false, config?.precision);
+	return new HanaTimestampBuilder(name, config?.precision);
 }

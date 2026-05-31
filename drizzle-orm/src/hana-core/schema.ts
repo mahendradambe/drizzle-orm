@@ -1,7 +1,5 @@
 import { entityKind, is } from '~/entity.ts';
 import { SQL, sql, type SQLWrapper } from '~/sql/sql.ts';
-import type { NonArray, Writable } from '~/utils.ts';
-import { type HanaEnum, type HanaEnumObject, hanaEnumObjectWithSchema, hanaEnumWithSchema } from './columns/enum.ts';
 import { type hanaSequence, hanaSequenceWithSchema } from './sequence.ts';
 import { type HanaTableFn, hanaTableWithSchema } from './table.ts';
 import {
@@ -32,26 +30,6 @@ export class HanaSchema<TName extends string = string> implements SQLWrapper {
 	materializedView = ((name, columns) => {
 		return hanaMaterializedViewWithSchema(name, columns, this.schemaName);
 	}) as typeof hanaMaterializedView;
-
-	public enum<U extends string, T extends Readonly<[U, ...U[]]>>(
-		enumName: string,
-		values: T | Writable<T>,
-	): HanaEnum<Writable<T>>;
-
-	public enum<E extends Record<string, string>>(
-		enumName: string,
-		enumObj: NonArray<E>,
-	): HanaEnumObject<E>;
-
-	public enum(enumName: any, input: any): any {
-		return Array.isArray(input)
-			? hanaEnumWithSchema(
-				enumName,
-				[...input] as [string, ...string[]],
-				this.schemaName,
-			)
-			: hanaEnumObjectWithSchema(enumName, input, this.schemaName);
-	}
 
 	sequence: typeof hanaSequence = ((name, options) => {
 		return hanaSequenceWithSchema(name, options, this.schemaName);

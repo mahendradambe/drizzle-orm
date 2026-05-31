@@ -251,6 +251,12 @@ export class HanaInsertBase<
 
 	override execute: ReturnType<this['prepare']>['execute'] = (placeholderValues) => {
 		return tracer.startActiveSpan('drizzle.operation', () => {
+			// Use batch execution for multi-row inserts
+			const batchResult = this.dialect.buildBatchInsertQuery(this.config);
+			if (batchResult !== null) {
+				return this.session.executeBatch(batchResult.sql, batchResult.paramRows);
+			}
+			// Single-row insert: standard execution
 			return this._prepare().execute(placeholderValues);
 		});
 	};

@@ -32,7 +32,7 @@ export class HanaUUID<T extends ColumnBaseConfig<'string uuid'>> extends HanaCol
 	static override readonly [entityKind]: string = 'HanaUUID';
 
 	getSQLType(): string {
-		return 'uuid';
+		return 'nvarchar(36)';
 	}
 }
 

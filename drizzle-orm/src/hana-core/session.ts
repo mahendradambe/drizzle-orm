@@ -206,6 +206,8 @@ export abstract class HanaSession<
 		});
 	}
 
+	abstract executeBatch(sql: string, paramRows: unknown[][]): Promise<unknown>;
+
 	all<T = unknown>(query: SQL): Promise<T[]> {
 		return this.prepareQuery<PreparedQueryConfig & { all: T[] }>(
 			this.dialect.sqlToQuery(query),
