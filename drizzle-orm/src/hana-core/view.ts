@@ -130,26 +130,20 @@ export class ManualViewBuilder<
 	}
 }
 
-export type HanaMaterializedViewWithConfig = RequireAtLeastOne<{
-	fillfactor: number;
-	toastTupleTarget: number;
-	parallelWorkers: number;
-	autovacuumEnabled: boolean;
-	vacuumIndexCleanup: 'auto' | 'off' | 'on';
-	vacuumTruncate: boolean;
-	autovacuumVacuumThreshold: number;
-	autovacuumVacuumScaleFactor: number;
-	autovacuumVacuumCostDelay: number;
-	autovacuumVacuumCostLimit: number;
-	autovacuumFreezeMinAge: number;
-	autovacuumFreezeMaxAge: number;
-	autovacuumFreezeTableAge: number;
-	autovacuumMultixactFreezeMinAge: number;
-	autovacuumMultixactFreezeMaxAge: number;
-	autovacuumMultixactFreezeTableAge: number;
-	logAutovacuumMinDuration: number;
-	userCatalogTable: boolean;
-}>;
+/**
+ * Configuration payload accepted by the materialized-view builder.
+ *
+ * SAP HANA does not expose per-MV storage tuning knobs at DDL time
+ * (delta/main column-store merge is server-managed; relational vacuum and
+ * fill-ratio knobs have no HANA counterpart). The type is retained for
+ * builder-API parity but accepts no keys — any value supplied is silently
+ * dropped at SQL emission.
+ *
+ * TODO(citation): link SAP HANA SQL Reference Guide CREATE MATERIALIZED VIEW
+ * once the public-doc URL is pinned; gate at upstream-PR submission via
+ * `grep -rn 'TODO(citation):' drizzle-orm/src/hana-core/` returning 0.
+ */
+export type HanaMaterializedViewWithConfig = Record<string, never>;
 
 export class MaterializedViewBuilderCore<TConfig extends { name: string; columns?: unknown }> {
 	static readonly [entityKind]: string = 'HanaMaterializedViewBuilderCore';

@@ -18,3 +18,8 @@ typeperf-test/tmp.tsconfig.json
 typeperf-test/trace
 typeperf-test/lib/big-schema.ts
 typeperf-test/lib/big-schema-rels.ts
+SAP_HANA_Client_Interface_Programming_Reference_en.pdf
+sap-hana-client-interface-programming-reference.md
+.paul/*
+.claude/*
+integration-tests/tests/imports*

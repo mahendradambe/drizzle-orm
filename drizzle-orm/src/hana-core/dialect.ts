@@ -696,7 +696,6 @@ export class HanaDialect {
 				case 'HanaNumericBigInt':
 				case 'HanaBigInt64':
 				case 'HanaBigIntString':
-				case 'HanaBigSerial64':
 				case 'HanaTimestampString': {
 					return sql`cast(${name} as char) as ${sql.identifier(key)}`;
 				}
@@ -897,7 +896,8 @@ export class HanaDialect {
 
 						const innerQuery = this.buildRelationalQuery({
 							table: targetTable as HanaTable | HanaView,
-							// HACK: hana doesn't support limit in subqueries
+							// HANA's SQL parser rejects nested LIMIT clauses inside a
+							// subquery, so the inner relational lookup is forced to mode 'many'.
 							mode: 'many',
 							schema,
 							queryConfig: join as DBQueryConfig,

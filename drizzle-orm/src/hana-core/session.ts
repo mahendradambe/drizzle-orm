@@ -152,9 +152,8 @@ export abstract class HanaPreparedQuery<T extends PreparedQueryConfig> implement
 }
 
 export interface HanaTransactionConfig {
-	isolationLevel?: 'read uncommitted' | 'read committed' | 'repeatable read' | 'serializable';
+	isolationLevel?: 'read committed' | 'repeatable read' | 'serializable';
 	accessMode?: 'read only' | 'read write';
-	deferrable?: boolean;
 }
 
 export abstract class HanaSession<
@@ -266,9 +265,6 @@ export abstract class HanaTransaction<
 		}
 		if (config.accessMode) {
 			chunks.push(config.accessMode);
-		}
-		if (typeof config.deferrable === 'boolean') {
-			chunks.push(config.deferrable ? 'deferrable' : 'not deferrable');
 		}
 		return sql.raw(chunks.join(' '));
 	}

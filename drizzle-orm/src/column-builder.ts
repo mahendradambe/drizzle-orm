@@ -57,6 +57,7 @@ export type ColumnDataObjectConstraint =
 	| 'json'
 	| 'line'
 	| 'point'
+	| 'seconddate'
 	// Gel-specific
 	| 'dateDuration'
 	| 'duration'
@@ -78,14 +79,17 @@ export type ColumnDataStringConstraint =
 	| 'macaddr8'
 	| 'nclob'
 	| 'numeric'
+	| 'seconddate'
+	| 'smalldecimal'
 	| 'sparsevec'
+	| 'text'
 	| 'time'
 	| 'timestamp'
 	| 'uint64'
 	| 'unumeric'
 	| 'uuid';
 
-export type ColumnDataBufferConstraint = 'blob';
+export type ColumnDataBufferConstraint = 'blob' | 'varbinary';
 
 export type ColumnDataConstraint =
 	| ColumnDataArrayConstraint

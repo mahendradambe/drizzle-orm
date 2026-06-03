@@ -179,30 +179,26 @@ export class ExtraConfigColumn<
 	}
 
 	/**
-	 * ### PostgreSQL documentation quote
+	 * Operator class selector for an index expression. The supplied class
+	 * binds the column to a specific set of comparison / lookup operators
+	 * when the index is evaluated.
 	 *
-	 * > An operator class with optional parameters can be specified for each column of an index.
-	 * The operator class identifies the operators to be used by the index for that column.
-	 * For example, a B-tree index on four-byte integers would use the int4_ops class;
-	 * this operator class includes comparison functions for four-byte integers.
-	 * In practice the default operator class for the column's data type is usually sufficient.
-	 * The main point of having operator classes is that for some data types, there could be more than one meaningful ordering.
-	 * For example, we might want to sort a complex-number data type either by absolute value or by real part.
-	 * We could do this by defining two operator classes for the data type and then selecting the proper class when creating an index.
-	 * More information about operator classes check:
+	 * SAP HANA's standard B-tree / CPB-tree / inverted-value indexes use the
+	 * column's native type ordering; an operator class is required only for
+	 * specialized index families (text / spatial / vector).
 	 *
-	 * ### Useful links
-	 * https://www.postgresql.org/docs/current/sql-createindex.html
+	 * If the `hana_vector` extension is installed, the following
+	 * operator-class tokens are recognised: `vector_l2_ops`, `vector_ip_ops`,
+	 * `vector_cosine_ops`, `vector_l1_ops`, `bit_hamming_ops`,
+	 * `bit_jaccard_ops`, `halfvec_l2_ops`, `sparsevec_l2_ops`.
 	 *
-	 * https://www.postgresql.org/docs/current/indexes-opclass.html
+	 * Any string value is accepted at the type-system layer via the widened
+	 * `(string & {})` escape-hatch on `HanaIndexOpClass`; the driver passes
+	 * the token through verbatim to HANA. Use this when the desired
+	 * operator class is not enumerated in the dialect.
 	 *
-	 * https://www.postgresql.org/docs/current/xindex.html
-	 *
-	 * ### Additional types
-	 * If you have the `hana_vector` extension installed in your database, you can use the
-	 * `vector_l2_ops`, `vector_ip_ops`, `vector_cosine_ops`, `vector_l1_ops`, `bit_hamming_ops`, `bit_jaccard_ops`, `halfvec_l2_ops`, `sparsevec_l2_ops` options, which are predefined types.
-	 *
-	 * **You can always specify any string you want in the operator class, in case Drizzle doesn't have it natively in its types**
+	 * @see SAP HANA SQL Reference Guide -- CREATE INDEX
+	 * (CITATION-UNAVAILABLE: HANA Cloud `hana_vector` extension docs)
 	 *
 	 * @param opClass
 	 * @returns

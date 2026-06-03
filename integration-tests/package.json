@@ -10,7 +10,8 @@
 		"test:esm": "node tests/imports.test.mjs && node tests/imports.test.cjs",
 		"test:data-api": "sst shell vitest run tests/pg/awsdatapi.test.ts",
 		"test:mysql": "vitest run --reporter=verbose --silent=false run tests/mysql/default tests/relational/mysql.test.ts tests/relational/mysql-v1.test.ts",
-		"test:planetscale": "vitest run --reporter=verbose --silent=false run tests/mysql/planetscale.test.ts tests/relational/mysql.planetscale"
+		"test:planetscale": "vitest run --reporter=verbose --silent=false run tests/mysql/planetscale.test.ts tests/relational/mysql.planetscale",
+		"test:hana": "cross-env HANA_TEST_ENABLED=1 vitest run --reporter=verbose --silent=false tests/hana"
 	},
 	"keywords": [],
 	"author": "Drizzle Team",
@@ -50,6 +51,7 @@
 		"@miniflare/shared": "^2.14.4",
 		"@planetscale/database": "^1.16.0",
 		"@prisma/client": "5.14.0",
+		"@sap/hana-client": "^2.27.19",
 		"@sqlitecloud/drivers": "^1.0.653",
 		"@tidbcloud/serverless": "^0.1.1",
 		"@tursodatabase/database": "0.2.1",

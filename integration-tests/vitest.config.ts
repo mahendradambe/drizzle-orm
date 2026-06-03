@@ -10,6 +10,15 @@ export default defineConfig({
 			'js-tests',
 		],
 		exclude: [
+			...(process.env['HANA_TEST_ENABLED']
+				? []
+				: [
+					// Live-HDI tests excluded by default; mock-only `*.unit.test.ts`
+					// in tests/hana/ stay included (no live DB dependency).
+					'tests/hana/hana.test.ts',
+					'tests/hana/probes.test.ts',
+					'tests/hana/pool-probes.test.ts',
+				]),
 			...(process.env['SKIP_EXTERNAL_DB_TESTS']
 				? [
 					'tests/relational/mysql.planetscale.test.ts',

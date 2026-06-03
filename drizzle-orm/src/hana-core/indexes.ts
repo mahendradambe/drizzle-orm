@@ -44,57 +44,25 @@ export type IndexColumn = HanaColumn;
 
 export type HanaIndexMethod = 'btree' | (string & {});
 
+/**
+ * Operator class identifier accepted by `ExtraConfigColumn.op()` for HANA
+ * indexes. Standard B-tree / CPB-tree / inverted-value indexes derive their
+ * comparison ordering from the column's native type; an explicit operator
+ * class is required only for specialized index families (vector / spatial /
+ * text-search) that ship with the `hana_vector` extension or comparable
+ * HANA add-ons.
+ *
+ * When the `hana_vector` extension is installed, the recognised tokens are
+ * the eight literals enumerated below. Any other string is accepted at the
+ * type-system layer via the trailing string escape-hatch and passed
+ * verbatim to HANA; the dialect performs no SQL-level validation of the
+ * token.
+ *
+ * TODO(citation): link SAP HANA Cloud `hana_vector` extension reference
+ * once the public-doc URL is pinned; gate at upstream-PR submission via
+ * `grep -rn 'TODO(citation):' drizzle-orm/src/hana-core/` returning 0.
+ */
 export type HanaIndexOpClass =
-	| 'abstime_ops'
-	| 'access_method'
-	| 'anyarray_eq'
-	| 'anyarray_ge'
-	| 'anyarray_gt'
-	| 'anyarray_le'
-	| 'anyarray_lt'
-	| 'anyarray_ne'
-	| 'bigint_ops'
-	| 'bit_ops'
-	| 'bool_ops'
-	| 'box_ops'
-	| 'bpchar_ops'
-	| 'char_ops'
-	| 'cidr_ops'
-	| 'cstring_ops'
-	| 'date_ops'
-	| 'float_ops'
-	| 'int2_ops'
-	| 'int4_ops'
-	| 'int8_ops'
-	| 'interval_ops'
-	| 'jsonb_ops'
-	| 'macaddr_ops'
-	| 'name_ops'
-	| 'numeric_ops'
-	| 'oid_ops'
-	| 'oidint4_ops'
-	| 'oidint8_ops'
-	| 'oidname_ops'
-	| 'oidvector_ops'
-	| 'point_ops'
-	| 'polygon_ops'
-	| 'range_ops'
-	| 'record_eq'
-	| 'record_ge'
-	| 'record_gt'
-	| 'record_le'
-	| 'record_lt'
-	| 'record_ne'
-	| 'text_ops'
-	| 'time_ops'
-	| 'timestamp_ops'
-	| 'timestamptz_ops'
-	| 'timetz_ops'
-	| 'uuid_ops'
-	| 'varbit_ops'
-	| 'varchar_ops'
-	// hana_vector types
-	| 'xml_ops'
 	| 'vector_l2_ops'
 	| 'vector_ip_ops'
 	| 'vector_cosine_ops'
