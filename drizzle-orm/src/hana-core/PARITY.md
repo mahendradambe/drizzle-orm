@@ -58,6 +58,10 @@ HANA SQL semantics anchor: **SAP HANA SQL Reference** (canonical SAP-published r
 ## Sha-lock footer
 
 Last sync:
-- advisory sha = 95b3bf03aa2628f98b0d156ff39484fb57d64f24afdc984adec6e9bf9934c213
-- git_head = 7651309a1b15c4924ec89b76d54e585fbd6ac9b8
-- date = 2026-06-03T10:11:03Z
+advisory sha = 95b3bf03aa2628f98b0d156ff39484fb57d64f24afdc984adec6e9bf9934c213
+git_head = 80c2581a5798c0706f523a1e55380dbda07fd4b8
+date = 2026-06-03T15:49:58Z
+Merge trail:
+merge sha = 80c2581a5798c0706f523a1e55380dbda07fd4b8
+merge upstream pin = caa24d2e59aef3ff4d640e5d1275b5dac23fe39d
+merge date = 2026-06-03T15:45:29Z
