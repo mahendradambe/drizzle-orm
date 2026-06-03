@@ -1,6 +1,6 @@
 import { is } from 'drizzle-orm';
 import { int, MsSqlColumnBuilder, MsSqlSchema, MsSqlTable, mssqlTable, MsSqlView } from 'drizzle-orm/mssql-core';
-import { CasingType } from 'src/cli/validations/common';
+import { configMigrations } from 'src/cli/validations/common';
 import { interimToDDL, MssqlDDL, SchemaError } from 'src/dialects/mssql/ddl';
 import { ddlDiff, ddlDiffDry } from 'src/dialects/mssql/diff';
 import { defaultFromColumn, fromDrizzleSchema, prepareFromSchemaFiles } from 'src/dialects/mssql/drizzle';
@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import getPort from 'get-port';
 import mssql from 'mssql';
 import { introspect } from 'src/cli/commands/pull-mssql';
-import { EmptyProgressView } from 'src/cli/views';
+import { EmptyProgressView, explain } from 'src/cli/views';
 import { createDDL } from 'src/dialects/mssql/ddl';
 import { defaultNameForDefault } from 'src/dialects/mssql/grammar';
 import { fromDatabaseForDrizzle } from 'src/dialects/mssql/introspect';
@@ -20,7 +20,7 @@ import { DB } from 'src/utils';
 import { v4 as uuid } from 'uuid';
 import 'zx/globals';
 import { suggestions } from 'src/cli/commands/push-mssql';
-import { EntitiesFilter, EntitiesFilterConfig } from 'src/cli/validations/cli';
+import { EntitiesFilter, EntitiesFilterConfig } from 'src/cli/validations/common';
 import { hash } from 'src/dialects/common';
 import { extractMssqlExisting } from 'src/dialects/drizzle';
 import { prepareEntityFilter } from 'src/dialects/pull-utils';
@@ -42,7 +42,6 @@ class MockError extends Error {
 
 export const drizzleToDDL = (
 	schema: MssqlDBSchema,
-	casing: CasingType | undefined,
 	filterConfig: EntitiesFilterConfig = {
 		schemas: undefined,
 		tables: undefined,
@@ -58,7 +57,6 @@ export const drizzleToDDL = (
 	const filter = prepareEntityFilter('mssql', filterConfig, existing);
 	const { schema: res, errors } = fromDrizzleSchema(
 		{ schemas, tables, views },
-		casing,
 		filter,
 	);
 
@@ -74,12 +72,11 @@ export const diff = async (
 	left: MssqlDBSchema | MssqlDDL,
 	right: MssqlDBSchema,
 	renamesArr: string[],
-	casing?: CasingType | undefined,
 ) => {
 	const { ddl: ddl1, errors: err1 } = 'entities' in left && '_' in left
 		? { ddl: left as MssqlDDL, errors: [] }
-		: drizzleToDDL(left, casing);
-	const { ddl: ddl2, errors: err2 } = drizzleToDDL(right, casing);
+		: drizzleToDDL(left);
+	const { ddl: ddl2, errors: err2 } = drizzleToDDL(right);
 
 	if (err1.length > 0 || err2.length > 0) {
 		throw new MockError([...err1, ...err2]);
@@ -112,7 +109,6 @@ export const diffIntrospect = async (
 	testName: string,
 	schemas: string[] = [],
 	entities?: EntitiesFilter,
-	casing?: CasingType | undefined,
 ) => {
 	const filterConfig: EntitiesFilterConfig = {
 		schemas,
@@ -121,14 +117,17 @@ export const diffIntrospect = async (
 		extensions: [],
 	};
 
-	const { ddl: initDDL, existing } = drizzleToDDL(initSchema, casing, filterConfig);
+	const { ddl: initDDL, existing } = drizzleToDDL(initSchema, filterConfig);
 	const { sqlStatements: init } = await ddlDiffDry(createDDL(), initDDL, 'default');
 
 	for (const st of init) await db.query(st);
 
 	const filter = prepareEntityFilter('mssql', filterConfig, existing);
 
-	const schema = await fromDatabaseForDrizzle(db, filter);
+	const schema = await fromDatabaseForDrizzle(db, filter, () => true, {
+		table: '__drizzle_migrations',
+		schema: 'drizzle',
+	});
 
 	const { ddl: ddl1, errors: e1 } = interimToDDL(schema);
 
@@ -149,7 +148,7 @@ export const diffIntrospect = async (
 		filePath,
 	]);
 
-	const { schema: schema2, errors: e2 } = fromDrizzleSchema(response, casing, filter);
+	const { schema: schema2, errors: e2 } = fromDrizzleSchema(response, filter);
 	const { ddl: ddl2, errors: e3 } = interimToDDL(schema2);
 
 	const {
@@ -173,14 +172,19 @@ export const push = async (config: {
 	to: MssqlDBSchema | MssqlDDL;
 	renames?: string[];
 	schemas?: string[];
-	casing?: CasingType;
 	log?: 'statements' | 'none';
 	force?: boolean;
 	expectError?: boolean;
 	ignoreSubsequent?: boolean;
+	explain?: boolean;
+	migrationsConfig?: {
+		schema?: string;
+		table?: string;
+	};
 }) => {
-	const { db, to, force, expectError, log } = config;
-	const casing = config.casing ?? 'camelCase';
+	const { db, to, log } = config;
+
+	const migrations = configMigrations.parse(config.migrationsConfig);
 
 	const filterConfig: EntitiesFilterConfig = {
 		schemas: config.schemas,
@@ -190,11 +194,16 @@ export const push = async (config: {
 	};
 	const { ddl: ddl2, errors: err2, existing } = 'entities' in to && '_' in to
 		? { ddl: to as MssqlDDL, errors: [], existing: [] }
-		: drizzleToDDL(to, casing, filterConfig);
+		: drizzleToDDL(to, filterConfig);
 
 	const filter = prepareEntityFilter('mssql', filterConfig, existing);
 
-	const { schema } = await introspect(db, filter, new EmptyProgressView());
+	const { schema } = await introspect(
+		db,
+		filter,
+		new EmptyProgressView(),
+		migrations,
+	);
 
 	const { ddl: ddl1, errors: err3 } = interimToDDL(schema);
 
@@ -208,7 +217,7 @@ export const push = async (config: {
 
 	const renames = new Set(config.renames ?? []);
 
-	const { sqlStatements, statements } = await ddlDiff(
+	const { sqlStatements, statements, groupedStatements } = await ddlDiff(
 		ddl1,
 		ddl2,
 		mockResolver(renames),
@@ -224,12 +233,12 @@ export const push = async (config: {
 		'push',
 	);
 
-	const { hints, losses } = await suggestions(db, statements, ddl2);
+	const hints = await suggestions(db, statements, ddl2);
 
-	if (force) {
-		for (const st of losses) {
-			await db.query(st);
-		}
+	if (config.explain) {
+		const explainMessage = explain('mssql', groupedStatements, false, []);
+		console.log(explainMessage);
+		return { sqlStatements, statements, hints };
 	}
 
 	let error: Error | null = null;
@@ -238,7 +247,7 @@ export const push = async (config: {
 		try {
 			await db.query(sql);
 		} catch (e) {
-			if (!expectError) throw e;
+			if (!config.expectError) throw e;
 			error = e as Error;
 			break;
 		}
@@ -247,7 +256,12 @@ export const push = async (config: {
 	// subsequent push
 	if (!config.ignoreSubsequent) {
 		{
-			const { schema } = await introspect(db, filter, new EmptyProgressView());
+			const { schema } = await introspect(
+				db,
+				filter,
+				new EmptyProgressView(),
+				migrations,
+			);
 			const { ddl: ddl1, errors: err3 } = interimToDDL(schema);
 
 			const { sqlStatements, statements } = await ddlDiff(
@@ -272,13 +286,14 @@ export const push = async (config: {
 		}
 	}
 
-	return { sqlStatements, statements, hints, losses, error };
+	return { sqlStatements, statements, hints, error };
 };
 
 export type TestDatabase = {
 	db: DB;
 	close: () => Promise<void>;
 	clear: () => Promise<void>;
+	client: mssql.ConnectionPool;
 };
 
 export const diffDefault = async <T extends MsSqlColumnBuilder>(
@@ -295,7 +310,7 @@ export const diffDefault = async <T extends MsSqlColumnBuilder>(
 	const column = mssqlTable(tableName, { column: builder }).column;
 	const sqlType = column.getSQLType();
 
-	const columnDefault = defaultFromColumn(column, 'camelCase');
+	const columnDefault = defaultFromColumn(column);
 
 	const res = [] as string[];
 	if (columnDefault !== expectedDefault) {
@@ -321,7 +336,10 @@ export const diffDefault = async <T extends MsSqlColumnBuilder>(
 	await db.query('INSERT INTO [table] ([column]) VALUES (default);');
 
 	// introspect to schema
-	const schema = await fromDatabaseForDrizzle(db, () => true);
+	const schema = await fromDatabaseForDrizzle(db, () => true, () => true, {
+		table: '__drizzle_migrations',
+		schema: 'drizzle',
+	});
 	const { ddl: ddl1, errors: e1 } = interimToDDL(schema);
 
 	const file = ddlToTypeScript(ddl1, schema.viewColumns, 'camel');
@@ -333,7 +351,7 @@ export const diffDefault = async <T extends MsSqlColumnBuilder>(
 	await tsc(file.file);
 
 	const response = await prepareFromSchemaFiles([path]);
-	const { schema: sch, errors: e2 } = fromDrizzleSchema(response, 'camelCase', () => true);
+	const { schema: sch, errors: e2 } = fromDrizzleSchema(response, () => true);
 	const { ddl: ddl2, errors: e3 } = interimToDDL(sch);
 
 	const { sqlStatements: afterFileSqlStatements } = await ddlDiffDry(ddl1, ddl2, 'push');
@@ -411,7 +429,7 @@ export function parseMssqlUrl(urlString: string) {
 	};
 }
 
-export const prepareTestDatabase = async (): Promise<TestDatabase> => {
+export const prepareTestDatabase = async (tx: boolean = true): Promise<TestDatabase> => {
 	const envUrl = process.env.MSSQL_CONNECTION_STRING;
 	const { url, container } = envUrl ? { url: envUrl, container: null } : await createDockerDB();
 	const params = parseMssqlUrl(url);
@@ -431,35 +449,49 @@ export const prepareTestDatabase = async (): Promise<TestDatabase> => {
 			await client.query(`create database [drizzle];`);
 			await client.query(`use [drizzle];`);
 
-			let tx = client.transaction();
-			let req = new mssql.Request(tx);
-			await tx.begin();
+			let transaction: mssql.Transaction | null = null;
+			let req: mssql.Request | null = null;
+			if (tx) {
+				transaction = client.transaction();
+				req = new mssql.Request(transaction);
+				await transaction.begin();
+			}
 
 			const db = {
 				query: async (sql: string, params: any[] = []) => {
-					const res = await req.query(sql).catch((e) => {
+					const res = await (req ?? client).query(sql).catch((e) => {
 						throw new Error(e.message);
 					});
 					return res.recordset as any[];
 				},
 			};
 			const close = async () => {
-				await tx.rollback().catch((e) => {});
+				if (transaction) {
+					await transaction.rollback().catch((e) => {});
+				}
 				await client?.close().catch(console.error);
 				await container?.stop().catch(console.error);
 			};
 
 			const clear = async () => {
-				try {
-					await tx.rollback();
-					await tx.begin();
-				} catch {
-					tx = client.transaction();
-					await tx.begin();
-					req = new mssql.Request(tx);
+				if (transaction) {
+					try {
+						await transaction.rollback();
+						await transaction.begin();
+					} catch {
+						transaction = client.transaction();
+						await transaction.begin();
+						req = new mssql.Request(transaction);
+					}
+					return;
 				}
+
+				await client.query(`use [master];`);
+				await client.query(`drop database if exists [drizzle];`);
+				await client.query(`create database [drizzle];`);
+				await client.query(`use [drizzle];`);
 			};
-			return { db, close, clear };
+			return { db, close, clear, client };
 		} catch (e) {
 			console.error(e);
 			throw e;

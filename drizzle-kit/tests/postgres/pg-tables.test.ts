@@ -1,5 +1,7 @@
-import { SQL, sql } from 'drizzle-orm';
+import type { PGlite } from '@electric-sql/pglite';
+import { aliasedTable, SQL, sql } from 'drizzle-orm';
 import {
+	camelCase,
 	foreignKey,
 	geometry,
 	index,
@@ -9,6 +11,7 @@ import {
 	pgTableCreator,
 	primaryKey,
 	serial,
+	snakeCase,
 	text,
 	unique,
 	uniqueIndex,
@@ -17,13 +20,17 @@ import {
 import { afterAll, beforeAll, beforeEach, expect, test } from 'vitest';
 import { diff, prepareTestDatabase, push, TestDatabase } from './mocks';
 
+fs.mkdirSync('./tests/postgres/migrations', { recursive: true });
+
 // @vitest-environment-options {"max-concurrency":1}
 let _: TestDatabase;
 let db: TestDatabase['db'];
+let client: TestDatabase<PGlite>['client'];
 
 beforeAll(async () => {
-	_ = await prepareTestDatabase();
+	_ = await prepareTestDatabase(false); // due to migrate function from orm in tests
 	db = _.db;
+	client = _.client;
 });
 
 afterAll(async () => {
@@ -373,6 +380,28 @@ test('add table #15', async () => {
 
 	const st0 = [
 		`CREATE TABLE "users" (\n\t"name" text CONSTRAINT "name_unique" UNIQUE NULLS NOT DISTINCT\n);\n`,
+	];
+	expect(st).toStrictEqual(st0);
+	expect(pst).toStrictEqual(st0);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5603
+test.skipIf(Date.now() < +new Date('2026-06-20'))('add table #16', async () => {
+	const users = pgTable('users', {
+		name: text(),
+	}, (t) => [index('name_idx').on(t.name)]);
+	const u = aliasedTable(users, 'u');
+	const to = {
+		users,
+		u,
+	};
+
+	const { sqlStatements: st } = await diff({}, to, []);
+	const { sqlStatements: pst } = await push({ db, to });
+
+	const st0 = [
+		'CREATE TABLE "users" (\n\t"name" text\n);\n',
+		'CREATE INDEX "name_idx" ON "users" ("name");',
 	];
 	expect(st).toStrictEqual(st0);
 	expect(pst).toStrictEqual(st0);
@@ -1031,7 +1060,7 @@ test('add index with op', async () => {
 test('optional db aliases (snake case)', async () => {
 	const from = {};
 
-	const t1 = pgTable(
+	const t1 = snakeCase.table(
 		't1',
 		{
 			t1Id1: integer().notNull().primaryKey(),
@@ -1054,14 +1083,14 @@ test('optional db aliases (snake case)', async () => {
 		],
 	);
 
-	const t2 = pgTable(
+	const t2 = snakeCase.table(
 		't2',
 		{
 			t2Id: serial().primaryKey(),
 		},
 	);
 
-	const t3 = pgTable(
+	const t3 = snakeCase.table(
 		't3',
 		{
 			t3Id1: integer(),
@@ -1076,13 +1105,11 @@ test('optional db aliases (snake case)', async () => {
 		t3,
 	};
 
-	const casing = 'snake_case';
-	const { sqlStatements: st } = await diff(from, to, [], casing);
+	const { sqlStatements: st } = await diff(from, to, []);
 
 	const { sqlStatements: pst } = await push({
 		db,
 		to,
-		casing,
 	});
 
 	const st1 = `CREATE TABLE "t1" (
@@ -1125,7 +1152,7 @@ test('optional db aliases (snake case)', async () => {
 
 // https://github.com/drizzle-team/drizzle-orm/issues/4541
 test('create table (camel case -> snake case)', async () => {
-	const t1 = pgTable('table_snake_case1', {
+	const t1 = snakeCase.table('table_snake_case1', {
 		columnCamelCase1: integer(),
 		columnCamelCase2: integer(),
 		columnCamelCase3: integer(),
@@ -1138,8 +1165,8 @@ test('create table (camel case -> snake case)', async () => {
 	const to = { t1 };
 
 	const casing = 'snake_case';
-	const { sqlStatements: st1 } = await diff({}, to, [], casing);
-	const { sqlStatements: pst1 } = await push({ db, to, casing });
+	const { sqlStatements: st1 } = await diff({}, to, []);
+	const { sqlStatements: pst1 } = await push({ db, to });
 
 	const eSt1 = [
 		'CREATE TABLE "table_snake_case1" (\n'
@@ -1156,7 +1183,7 @@ test('create table (camel case -> snake case)', async () => {
 });
 
 test('create table (snake case -> camel case)', async () => {
-	const t1 = pgTable('tableCamelcase1', {
+	const t1 = camelCase.table('tableCamelcase1', {
 		column_snake_case1: integer(),
 		column_snake_case2: integer(),
 		column_snake_case3: integer(),
@@ -1168,9 +1195,8 @@ test('create table (snake case -> camel case)', async () => {
 
 	const to = { t1 };
 
-	const casing = 'camelCase';
-	const { sqlStatements: st1 } = await diff({}, to, [], casing);
-	const { sqlStatements: pst1 } = await push({ db, to, casing });
+	const { sqlStatements: st1 } = await diff({}, to, []);
+	const { sqlStatements: pst1 } = await push({ db, to });
 
 	const eSt1 = [
 		'CREATE TABLE "tableCamelcase1" (\n'
@@ -1189,7 +1215,7 @@ test('create table (snake case -> camel case)', async () => {
 test('optional db aliases (camel case)', async () => {
 	const from = {};
 
-	const t1 = pgTable('t1', {
+	const t1 = camelCase.table('t1', {
 		t1_id1: integer().notNull().primaryKey(),
 		t1_col2: integer().notNull(),
 		t1_col3: integer().notNull(),
@@ -1207,11 +1233,11 @@ test('optional db aliases (camel case)', async () => {
 		}),
 	]);
 
-	const t2 = pgTable('t2', {
+	const t2 = camelCase.table('t2', {
 		t2_id: serial().primaryKey(),
 	});
 
-	const t3 = pgTable('t3', {
+	const t3 = camelCase.table('t3', {
 		t3_id1: integer(),
 		t3_id2: integer(),
 	}, (table) => [primaryKey({ columns: [table.t3_id1, table.t3_id2] })]);
@@ -1222,13 +1248,11 @@ test('optional db aliases (camel case)', async () => {
 		t3,
 	};
 
-	const casing = 'camelCase';
-	const { sqlStatements: st } = await diff(from, to, [], casing);
+	const { sqlStatements: st } = await diff(from, to, []);
 
 	const { sqlStatements: pst } = await push({
 		db,
 		to,
-		casing,
 	});
 
 	const st1 = `CREATE TABLE "t1" (
@@ -1368,4 +1392,179 @@ test('rename 2 tables', async () => {
 
 	expect(st).toStrictEqual(st0);
 	expect(pst).toStrictEqual(st0);
+});
+
+test('push after migrate with custom migrations table #1', async () => {
+	const migrationsConfig = {
+		schema: undefined,
+		table: undefined,
+	};
+
+	const { migrate } = await import('drizzle-orm/pglite/migrator');
+	const { drizzle } = await import('drizzle-orm/pglite');
+	await migrate(drizzle({ client }), {
+		migrationsSchema: migrationsConfig.schema,
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/postgres/migrations',
+	});
+
+	const to = {
+		table: pgTable('table1', { col1: integer() }),
+	};
+
+	const { sqlStatements: st2 } = await diff({}, to, []);
+	const { sqlStatements: pst2 } = await push({ db, to, migrationsConfig });
+	const expectedSt2 = [
+		'CREATE TABLE "table1" (\n\t"col1" integer\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+test('push after migrate with custom migrations table #2', async () => {
+	const migrationsConfig = {
+		schema: undefined,
+		table: 'migrations',
+	};
+
+	const { migrate } = await import('drizzle-orm/pglite/migrator');
+	const { drizzle } = await import('drizzle-orm/pglite');
+	await migrate(drizzle({ client }), {
+		migrationsSchema: migrationsConfig.schema,
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/postgres/migrations',
+	});
+
+	const to = {
+		table: pgTable('table1', { col1: integer() }),
+	};
+	const { sqlStatements: st2 } = await diff({}, to, []);
+
+	const { sqlStatements: pst2 } = await push({ db, to, migrationsConfig });
+	const expectedSt2 = [
+		'CREATE TABLE "table1" (\n\t"col1" integer\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+test('push after migrate with custom migrations table #3', async () => {
+	const migrationsConfig = {
+		schema: 'migrations_schema',
+		table: undefined,
+	};
+
+	const { migrate } = await import('drizzle-orm/pglite/migrator');
+	const { drizzle } = await import('drizzle-orm/pglite');
+	await migrate(drizzle({ client }), {
+		migrationsSchema: migrationsConfig.schema,
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/postgres/migrations',
+	});
+
+	const to = {
+		table: pgTable('table1', { col1: integer() }),
+	};
+
+	const { sqlStatements: st2 } = await diff({}, to, []);
+	const { sqlStatements: pst2 } = await push({ db, to, migrationsConfig });
+	const expectedSt2 = [
+		'CREATE TABLE "table1" (\n\t"col1" integer\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+test('push after migrate with custom migrations table #4', async () => {
+	const migrationsConfig = {
+		schema: 'migrations_schema',
+		table: 'migrations',
+	};
+
+	const { migrate } = await import('drizzle-orm/pglite/migrator');
+	const { drizzle } = await import('drizzle-orm/pglite');
+	await migrate(drizzle({ client }), {
+		migrationsSchema: migrationsConfig.schema,
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/postgres/migrations',
+	});
+
+	const to = {
+		table: pgTable('table1', { col1: integer() }),
+	};
+
+	const { sqlStatements: st2 } = await diff({}, to, []);
+	const { sqlStatements: pst2 } = await push({ db, to, migrationsConfig });
+	const expectedSt2 = [
+		'CREATE TABLE "table1" (\n\t"col1" integer\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5190
+test('push with pscale_extensions schema', async () => {
+	await db.query(`CREATE SCHEMA pscale_extensions`);
+	const schema1 = {
+		table1: pgTable('table1', {
+			id: text().primaryKey(),
+		}),
+	};
+
+	const { sqlStatements: pst2 } = await push({ db, to: schema1 });
+
+	const expectedSt2: string[] = [`CREATE TABLE "table1" (\n\t"id" text PRIMARY KEY\n);\n`];
+
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5329
+test(
+	'push empty schema with `schemaFilter` set to `["public"]`',
+	async () => {
+		await db.query(`CREATE SCHEMA "cron";`);
+		await db.query(`CREATE TABLE "cron"."job" (id integer, type text);`);
+		await db.query(`CREATE POLICY "test" ON "cron"."job" AS PERMISSIVE FOR ALL TO public;`);
+
+		const { sqlStatements: pst2 } = await push({
+			db,
+			to: {},
+			schemas: ['public'],
+		});
+
+		const expectedSt2: string[] = [];
+
+		expect(pst2).toStrictEqual(expectedSt2);
+	},
+);
+
+// https://github.com/drizzle-team/drizzle-orm/issues/4838
+test('rename table with identity column', async () => {
+	const from = {
+		Hello: pgTable('hello', {
+			id: integer().primaryKey().generatedAlwaysAsIdentity(),
+		}),
+	};
+
+	const to = {
+		Hello: pgTable('hello2', {
+			id: integer().primaryKey().generatedAlwaysAsIdentity(),
+		}),
+	};
+
+	const { sqlStatements: st } = await diff(from, to, [`public.hello->public.hello2`]);
+
+	await push({ db, to: from, schemas: [] });
+
+	const { sqlStatements: pst } = await push({
+		db,
+		to,
+		schemas: [],
+		renames: [`public.hello->public.hello2`],
+	});
+
+	const expectedSt: string[] = ['ALTER TABLE "hello" RENAME TO "hello2";'];
+
+	expect(st).toStrictEqual(expectedSt);
+	expect(pst).toStrictEqual(expectedSt);
 });

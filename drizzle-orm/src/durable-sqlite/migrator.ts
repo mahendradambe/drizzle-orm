@@ -1,6 +1,8 @@
-import { formatToMillis, type MigrationMeta, type MigratorInitFailResponse } from '~/migrator.ts';
+import type { MigrationMeta, MigratorInitFailResponse } from '~/migrator.ts';
+import { formatToMillis, getMigrationsToRun } from '~/migrator.utils.ts';
 import type { AnyRelations } from '~/relations.ts';
 import { sql } from '~/sql/index.ts';
+import { upgradeSyncIfNeeded } from '~/up-migrations/sqlite.ts';
 import type { DrizzleSqliteDODatabase } from './driver.ts';
 
 interface MigrationConfig {
@@ -32,6 +34,7 @@ function readMigrationFiles({ migrations }: MigrationConfig): MigrationMeta[] {
 				bps: true,
 				folderMillis: migrationDate,
 				hash: '',
+				name: key,
 			});
 		} catch {
 			throw new Error(`Failed to parse migration: ${key}`);
@@ -41,31 +44,37 @@ function readMigrationFiles({ migrations }: MigrationConfig): MigrationMeta[] {
 	return migrationQueries;
 }
 
-export async function migrate<
+export function migrate<
 	TSchema extends Record<string, unknown>,
 	TRelations extends AnyRelations,
 >(
 	db: DrizzleSqliteDODatabase<TSchema, TRelations>,
 	config: MigrationConfig,
-): Promise<void | MigratorInitFailResponse> {
+): void | MigratorInitFailResponse {
 	const migrations = readMigrationFiles(config);
 
-	return await db.transaction((tx) => {
+	return db.transaction((tx) => {
 		try {
 			const migrationsTable = '__drizzle_migrations';
 
-			const migrationTableCreate = sql`
+			const { newDb } = upgradeSyncIfNeeded(migrationsTable, db.session, migrations);
+
+			if (newDb) {
+				const migrationTableCreate = sql`
 				CREATE TABLE IF NOT EXISTS ${sql.identifier(migrationsTable)} (
-					id SERIAL PRIMARY KEY,
+					id INTEGER PRIMARY KEY,
 					hash text NOT NULL,
-					created_at numeric
+					created_at numeric,
+					name text,
+					applied_at TEXT
 				)
 			`;
-			db.run(migrationTableCreate);
+				db.run(migrationTableCreate);
+			}
 
-			const dbMigrations = db.values<[number, string, string]>(
-				sql`SELECT id, hash, created_at FROM ${sql.identifier(migrationsTable)} ORDER BY created_at DESC LIMIT 1`,
-			);
+			const dbMigrations = (db.values<[number, string, string, string | null]>(
+				sql`SELECT id, hash, created_at, name FROM ${sql.identifier(migrationsTable)}`,
+			)).map(([id, hash, created_at, name]) => ({ id, hash, created_at, name }));
 
 			if (config.init) {
 				if (dbMigrations.length) {
@@ -83,24 +92,26 @@ export async function migrate<
 				db.run(
 					sql`insert into ${
 						sql.identifier(migrationsTable)
-					} ("hash", "created_at") values(${migration.hash}, ${migration.folderMillis})`,
+					} ("hash", "created_at", "name", "applied_at") values(${migration.hash}, ${migration.folderMillis}, ${migration.name}, ${
+						new Date().toISOString()
+					})`,
 				);
 
 				return;
 			}
 
-			const lastDbMigration = dbMigrations[0] ?? undefined;
-			for (const migration of migrations) {
-				if (!lastDbMigration || Number(lastDbMigration[2])! < migration.folderMillis) {
-					for (const stmt of migration.sql) {
-						db.run(sql.raw(stmt));
-					}
-					db.run(
-						sql`INSERT INTO ${
-							sql.identifier(migrationsTable)
-						} ("hash", "created_at") VALUES(${migration.hash}, ${migration.folderMillis})`,
-					);
+			const migrationsToRun = getMigrationsToRun({ localMigrations: migrations, dbMigrations });
+			for (const migration of migrationsToRun) {
+				for (const stmt of migration.sql) {
+					db.run(sql.raw(stmt));
 				}
+				db.run(
+					sql`INSERT INTO ${
+						sql.identifier(migrationsTable)
+					} ("hash", "created_at", "name", "applied_at") VALUES(${migration.hash}, ${migration.folderMillis}, ${migration.name}, ${
+						new Date().toISOString()
+					})`,
+				);
 			}
 
 			return;

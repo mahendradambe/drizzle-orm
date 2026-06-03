@@ -20,10 +20,11 @@ import type {
 	SelectMode,
 	SelectResult,
 } from '~/query-builders/select.types.ts';
+import { preparedStatementName } from '~/query-name-generator.ts';
 import { QueryPromise } from '~/query-promise.ts';
 import type { RunnableQuery } from '~/runnable-query.ts';
 import { SelectionProxyHandler } from '~/selection-proxy.ts';
-import { type ColumnsSelection, type Query, SQL, type SQLWrapper } from '~/sql/sql.ts';
+import { type ColumnsSelection, type Placeholder, type Query, SQL, type SQLWrapper } from '~/sql/sql.ts';
 import { Subquery } from '~/subquery.ts';
 import { getTableName, type InferInsertModel, Table } from '~/table.ts';
 import {
@@ -32,7 +33,6 @@ import {
 	type Equal,
 	getTableLikeName,
 	mapUpdateSet,
-	type NeonAuthToken,
 	orderSelectedFields,
 	type Simplify,
 	type UpdateSet,
@@ -64,6 +64,7 @@ export type CockroachUpdateSetSource<TTable extends CockroachTable> =
 			| GetColumnData<TTable['_']['columns'][Key]>
 			| SQL
 			| CockroachColumn
+			| Placeholder
 			| undefined;
 	}
 	& {};
@@ -584,32 +585,29 @@ export class CockroachUpdateBase<
 	}
 
 	toSQL(): Query {
-		const { typings: _typings, ...rest } = this.dialect.sqlToQuery(this.getSQL());
-		return rest;
+		return this.dialect.sqlToQuery(this.getSQL());
 	}
 
 	/** @internal */
-	_prepare(name?: string): CockroachUpdatePrepare<this> {
-		const query = this.session.prepareQuery<
+	_prepare(name?: string, generateName = false): CockroachUpdatePrepare<this> {
+		const query = this.dialect.sqlToQuery(this.getSQL());
+		const preparedQuery = this.session.prepareQuery<
 			PreparedQueryConfig & { execute: TReturning[] }
-		>(this.dialect.sqlToQuery(this.getSQL()), this.config.returning, name, true);
-		query.joinsNotNullableMap = this.joinsNotNullableMap;
-		return query;
+		>(
+			query,
+			this.config.returning,
+			name ?? (generateName ? preparedStatementName(query.sql, query.params) : name),
+		);
+		preparedQuery.joinsNotNullableMap = this.joinsNotNullableMap;
+		return preparedQuery;
 	}
 
-	prepare(name: string): CockroachUpdatePrepare<this> {
-		return this._prepare(name);
-	}
-
-	private authToken?: NeonAuthToken;
-	/** @internal */
-	setToken(token?: NeonAuthToken) {
-		this.authToken = token;
-		return this;
+	prepare(name?: string): CockroachUpdatePrepare<this> {
+		return this._prepare(name, true);
 	}
 
 	override execute: ReturnType<this['prepare']>['execute'] = (placeholderValues) => {
-		return this._prepare().execute(placeholderValues, this.authToken);
+		return this._prepare().execute(placeholderValues);
 	};
 
 	/** @internal */
@@ -626,6 +624,11 @@ export class CockroachUpdateBase<
 				)
 				: undefined
 		) as this['_']['selectedFields'];
+	}
+
+	/** @internal */
+	withoutSelectionCastCodecs(): this {
+		return this;
 	}
 
 	$dynamic(): CockroachUpdateDynamic<this> {

@@ -1,11 +1,10 @@
-import type { ColumnBaseConfig } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import type { PgTable } from '~/pg-core/table.ts';
 import { type Equal, getColumnNameAndConfig } from '~/utils.ts';
 import { PgColumn } from './common.ts';
-import { PgDateColumnBaseBuilder } from './date.common.ts';
+import { PgDateColumnBuilder } from './date.common.ts';
 
-export class PgDateBuilder extends PgDateColumnBaseBuilder<{
+export class PgDateBuilder extends PgDateColumnBuilder<{
 	dataType: 'object date';
 	data: Date;
 	driverParam: string;
@@ -22,25 +21,23 @@ export class PgDateBuilder extends PgDateColumnBaseBuilder<{
 	}
 }
 
-export class PgDate<T extends ColumnBaseConfig<'object date'>> extends PgColumn<T> {
+export class PgDate extends PgColumn<'object date'> {
 	static override readonly [entityKind]: string = 'PgDate';
+
+	/** @internal */
+	override readonly codec = 'date';
 
 	getSQLType(): string {
 		return 'date';
 	}
 
-	override mapFromDriverValue(value: string | Date): Date {
-		if (typeof value === 'string') return new Date(value);
-		return value;
-	}
-
-	override mapToDriverValue(value: Date | string): string {
+	override mapToDriverValue = function(value: Date | string): string {
 		if (typeof value === 'string') return value;
 		return value.toISOString();
-	}
+	};
 }
 
-export class PgDateStringBuilder extends PgDateColumnBaseBuilder<{
+export class PgDateStringBuilder extends PgDateColumnBuilder<{
 	dataType: 'string date';
 	data: string;
 	driverParam: string;
@@ -60,22 +57,20 @@ export class PgDateStringBuilder extends PgDateColumnBaseBuilder<{
 	}
 }
 
-export class PgDateString<T extends ColumnBaseConfig<'string date'>> extends PgColumn<T> {
+export class PgDateString extends PgColumn<'string date'> {
 	static override readonly [entityKind]: string = 'PgDateString';
+
+	/** @internal */
+	override readonly codec = 'date:string';
 
 	getSQLType(): string {
 		return 'date';
 	}
 
-	override mapFromDriverValue(value: Date | string): string {
-		if (typeof value === 'string') return value;
-		return value.toISOString().slice(0, -14);
-	}
-
-	override mapToDriverValue(value: Date | string): string {
+	override mapToDriverValue = (value: Date | string): string => {
 		if (typeof value === 'string') return value;
 		return value.toISOString();
-	}
+	};
 }
 
 export interface PgDateConfig<T extends 'date' | 'string' = 'date' | 'string'> {

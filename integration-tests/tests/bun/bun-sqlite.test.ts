@@ -59,6 +59,7 @@ import {
 	unique,
 	uniqueKeyName,
 } from 'drizzle-orm/sqlite-core';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import Keyv from 'keyv';
 import type { Equal } from '~/utils';
 import { Expect } from '~/utils';
@@ -266,6 +267,67 @@ test('migrator', async () => {
 	await db.run(sql`drop table another_users`);
 	await db.run(sql`drop table users12`);
 	await db.run(sql`drop table __drizzle_migrations`);
+});
+
+test('migrator: local migration is unapplied. Migrations timestamp is less than last db migration', async () => {
+	const users = sqliteTable('migration_users', {
+		id: int('id').primaryKey(),
+		name: text().notNull(),
+		email: text().notNull(),
+		age: int(),
+	});
+
+	const users2 = sqliteTable('migration_users2', {
+		id: int('id').primaryKey(),
+		name: text().notNull(),
+		email: text().notNull(),
+		age: int(),
+	});
+
+	await db.run(sql`drop table if exists "__drizzle_migrations";`);
+	await db.run(sql`drop table if exists ${users}`);
+	await db.run(sql`drop table if exists ${users2}`);
+
+	// create migration directory
+	const migrationDir = './migrations/bun-sqlite';
+	if (existsSync(migrationDir)) rmSync(migrationDir, { recursive: true });
+	mkdirSync(migrationDir, { recursive: true });
+
+	// first branch
+	mkdirSync(`${migrationDir}/20240101010101_initial`, { recursive: true });
+	writeFileSync(
+		`${migrationDir}/20240101010101_initial/migration.sql`,
+		`CREATE TABLE "migration_users" (\n"id" INTEGER PRIMARY KEY NOT NULL,\n"name" TEXT NOT NULL,\n"email" TEXT NOT NULL\n);`,
+	);
+	mkdirSync(`${migrationDir}/20240303030303_third`, { recursive: true });
+	writeFileSync(
+		`${migrationDir}/20240303030303_third/migration.sql`,
+		`ALTER TABLE "migration_users" ADD COLUMN "age" INTEGER;`,
+	);
+
+	await migrate.sqlite(db, { migrationsFolder: migrationDir });
+	await db.insert(users).values({ name: 'John', email: '', age: 30 });
+	const res1 = await db.select().from(users);
+
+	// second migration was not applied yet
+	expect((async () => await db.insert(users2).values({ name: 'John', email: '', age: 30 }))()).rejects.toThrowError();
+
+	// insert migration with earlier timestamp
+	mkdirSync(`${migrationDir}/20240202020202_second`, { recursive: true });
+	writeFileSync(
+		`${migrationDir}/20240202020202_second/migration.sql`,
+		`CREATE TABLE "migration_users2" (\n"id" INTEGER PRIMARY KEY NOT NULL,\n"name" TEXT NOT NULL,\n"email" TEXT NOT NULL\n,"age" INTEGER\n);`,
+	);
+	await migrate.sqlite(db, { migrationsFolder: migrationDir });
+
+	await db.insert(users2).values({ name: 'John', email: '', age: 30 });
+	const res2 = await db.select().from(users2);
+
+	const expected = [{ id: 1, name: 'John', email: '', age: 30 }];
+	expect(res1).toStrictEqual(expected);
+	expect(res2).toStrictEqual(expected);
+
+	rmSync(migrationDir, { recursive: true });
 });
 
 describe('common', () => {
@@ -572,8 +634,7 @@ describe('common', () => {
 		expect(users).toStrictEqual([{ id: 1, name: 'Jane' }, { id: 1, name: 'John' }, { id: 2, name: 'John' }]);
 	});
 
-	// test.skipIf doesn't work
-	(Date.now() > new Date('2025.10.17').getTime() ? test : test.skip)('insert returning sql', async () => {
+	test('insert returning sql', async () => {
 		const users = await db.insert(usersTable).values({ name: 'John' }).returning({
 			name: sql`upper(${usersTable.name})`,
 		}).all();
@@ -819,8 +880,7 @@ describe('common', () => {
 		]);
 	});
 
-	// test.skipIf doesn't work
-	(Date.now() > new Date('2025.10.17').getTime() ? test : test.skip)('insert many with returning', async () => {
+	test('insert many with returning', async () => {
 		const result = await db.insert(usersTable).values([
 			{ name: 'John' },
 			{ name: 'Bruce', json: ['foo', 'bar'] },
@@ -1169,8 +1229,7 @@ describe('common', () => {
 		expect(result).toStrictEqual({ id: 1, name: 'John' });
 	});
 
-	// test.skipIf doesn't work
-	(Date.now() > new Date('2025.10.17').getTime() ? test : test.skip)('insert via db.get w/ query builder', async () => {
+	test('insert via db.get w/ query builder', async () => {
 		const inserted = await db.get<Pick<typeof usersTable.$inferSelect, 'id' | 'name'>>(
 			db.insert(usersTable).values({ name: 'John' }).returning({ id: usersTable.id, name: usersTable.name }),
 		);
@@ -3093,8 +3152,7 @@ describe('common', () => {
 		]);
 	});
 
-	// test.skipIf doesn't work
-	(Date.now() > new Date('2025.10.17').getTime() ? test : test.skip)('update with limit and order by', async () => {
+	test('update with limit and order by', async () => {
 		await db.insert(usersTable).values([
 			{ name: 'Barry', verified: false },
 			{ name: 'Alan', verified: false },
@@ -3114,8 +3172,7 @@ describe('common', () => {
 		]);
 	});
 
-	// test.skipIf doesn't work
-	(Date.now() > new Date('2025.10.17').getTime() ? test : test.skip)('delete with limit and order by', async () => {
+	test('delete with limit and order by', async () => {
 		await db.insert(usersTable).values([
 			{ name: 'Barry', verified: false },
 			{ name: 'Alan', verified: false },

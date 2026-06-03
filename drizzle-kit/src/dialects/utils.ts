@@ -1,4 +1,4 @@
-import { type Simplify, trimChar } from '../utils';
+import { type DB, type Simplify, trimChar } from '../utils';
 import type { CockroachDDL } from './cockroach/ddl';
 import type { MssqlDDL } from './mssql/ddl';
 import type { MysqlDDL } from './mysql/ddl';
@@ -170,4 +170,75 @@ export const preserveEntityNames = <
 			} as any,
 		});
 	}
+};
+
+export const filterMigrationsSchema = (
+	interim: {
+		schemas?: { name: string }[];
+		columns: { table: string; schema?: string }[];
+		pks: { table: string; schema?: string }[];
+		tables: { name: string; schema?: string }[];
+		defaults?: { table: string; schema?: string }[]; // for mssql only
+	},
+	migrations: {
+		schema: string;
+		table: string;
+	},
+) => {
+	const migrationsSchema = migrations.schema;
+	const migrationsTable = migrations.table;
+
+	interim.tables = interim.tables.filter((table) =>
+		!(table.name === migrationsTable && (table.schema ? table.schema === migrationsSchema : true))
+	);
+	interim.columns = interim.columns.filter((column) =>
+		!(column.table === migrationsTable && (column.schema ? column.schema === migrationsSchema : true))
+	);
+	interim.pks = interim.pks.filter((pk) =>
+		!(pk.table === migrationsTable && (pk.schema ? pk.schema === migrationsSchema : true))
+	);
+
+	// mssql only
+	if (interim.defaults) {
+		interim.defaults = interim.defaults.filter((def) =>
+			!(def.table === migrationsTable && (def.schema ? def.schema === migrationsSchema : true))
+		);
+	}
+
+	if (interim.schemas) {
+		let tablesInMigrationSchema = interim.tables.filter((table) => table.schema === migrationsSchema);
+		if (!tablesInMigrationSchema.length) {
+			interim.schemas = interim.schemas.filter((schema) => schema.name !== migrationsSchema);
+		}
+	}
+
+	return interim;
+};
+
+export const batchQuery = async <T>(
+	db: DB,
+	getSQL: (params: { limit: number; cursor: T | undefined }) => string,
+	callback: (count: number) => void,
+	batchSize: number = 100_000,
+): Promise<T[]> => {
+	let results: T[] = [];
+	let cursor: T | undefined;
+
+	while (true) {
+		const batch = await db.query(getSQL({ limit: batchSize, cursor }).trim());
+
+		if (batch.length === 0) {
+			break;
+		}
+
+		results.push(...batch);
+		callback(results.length);
+
+		if (batch.length < batchSize) {
+			break;
+		}
+
+		cursor = batch[batch.length - 1];
+	}
+	return results;
 };

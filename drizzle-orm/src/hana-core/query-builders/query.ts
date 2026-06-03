@@ -95,7 +95,10 @@ export class HanaRelationalQuery<TResult> extends QueryPromise<TResult>
 				undefined,
 				(rawRows, mapColumnValue) => {
 					const rows = rawRows.map((row) =>
-						mapRelationalRow(row, query.selection, mapColumnValue, this.parseJson, true)
+						mapRelationalRow(row, true, query.selection, mapColumnValue, this.parseJson, true) as Record<
+							string,
+							unknown
+						>
 					);
 					if (this.mode === 'first') {
 						return rows[0] as TResult;

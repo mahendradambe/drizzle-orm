@@ -1,4 +1,3 @@
-import type { ColumnBaseConfig } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import { getColumnNameAndConfig } from '~/utils.ts';
 import type { PgTable } from '../table.ts';
@@ -8,7 +7,6 @@ export class PgBigSerial53Builder extends PgColumnBuilder<{
 	dataType: 'number int53';
 	data: number;
 	driverParam: number;
-
 	notNull: true;
 	hasDefault: true;
 }> {
@@ -29,18 +27,14 @@ export class PgBigSerial53Builder extends PgColumnBuilder<{
 	}
 }
 
-export class PgBigSerial53<T extends ColumnBaseConfig<'number int53'>> extends PgColumn<T> {
+export class PgBigSerial53 extends PgColumn<'number int53'> {
 	static override readonly [entityKind]: string = 'PgBigSerial53';
+
+	/** @internal */
+	override readonly codec = 'bigserial:number';
 
 	getSQLType(): string {
 		return 'bigserial';
-	}
-
-	override mapFromDriverValue(value: number): number {
-		if (typeof value === 'number') {
-			return value;
-		}
-		return Number(value);
 	}
 }
 
@@ -68,16 +62,14 @@ export class PgBigSerial64Builder extends PgColumnBuilder<{
 	}
 }
 
-export class PgBigSerial64<T extends ColumnBaseConfig<'bigint int64'>> extends PgColumn<T> {
+export class PgBigSerial64 extends PgColumn<'bigint int64'> {
 	static override readonly [entityKind]: string = 'PgBigSerial64';
+
+	/** @internal */
+	override readonly codec = 'bigserial';
 
 	getSQLType(): string {
 		return 'bigserial';
-	}
-
-	// eslint-disable-next-line unicorn/prefer-native-coercion-functions
-	override mapFromDriverValue(value: string): bigint {
-		return BigInt(value);
 	}
 }
 

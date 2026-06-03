@@ -1,22 +1,20 @@
 import { entityKind } from '~/entity.ts';
 import { QueryPromise } from '~/query-promise.ts';
-import {
-	type BuildQueryResult,
-	type BuildRelationalQueryResult,
-	type DBQueryConfig,
-	mapRelationalRow,
-	type TableRelationalConfig,
-	type TablesRelationalConfig,
+import type {
+	BuildQueryResult,
+	BuildRelationalQueryResult,
+	DBQueryConfigWithComment,
+	TableRelationalConfig,
+	TablesRelationalConfig,
 } from '~/relations.ts';
-import type { Query, QueryWithTypings, SQL } from '~/sql/sql.ts';
+import type { Query, SQL, SqlCommenterInput } from '~/sql/sql.ts';
 import type { KnownKeysOnly } from '~/utils.ts';
 import type { MySqlDialect } from '../dialect.ts';
-import type { MySqlPreparedQueryConfig, MySqlSession, PreparedQueryHKTBase, PreparedQueryKind } from '../session.ts';
+import type { MySqlPreparedQuery, MySqlPreparedQueryConfig, MySqlSession } from '../session.ts';
 import type { MySqlTable } from '../table.ts';
 import type { MySqlView } from '../view.ts';
 
 export class RelationalQueryBuilder<
-	TPreparedQueryHKT extends PreparedQueryHKTBase,
 	TSchema extends TablesRelationalConfig,
 	TFields extends TableRelationalConfig,
 > {
@@ -30,37 +28,40 @@ export class RelationalQueryBuilder<
 		private session: MySqlSession,
 	) {}
 
-	findMany<TConfig extends DBQueryConfig<'many', TSchema, TFields>>(
-		config?: KnownKeysOnly<TConfig, DBQueryConfig<'many', TSchema, TFields>>,
-	): MySqlRelationalQuery<TPreparedQueryHKT, BuildQueryResult<TSchema, TFields, TConfig>[]> {
+	findMany<TConfig extends DBQueryConfigWithComment<'many', TSchema, TFields>>(
+		config?: KnownKeysOnly<TConfig, DBQueryConfigWithComment<'many', TSchema, TFields>> & {
+			comment?: SqlCommenterInput;
+		},
+	): MySqlRelationalQuery<BuildQueryResult<TSchema, TFields, TConfig>[]> {
 		return new MySqlRelationalQuery(
 			this.schema,
 			this.table,
 			this.tableConfig,
 			this.dialect,
 			this.session,
-			config as DBQueryConfig<'many'> | undefined ?? true,
+			config as DBQueryConfigWithComment<'many'> | undefined ?? true,
 			'many',
 		);
 	}
 
-	findFirst<TSelection extends DBQueryConfig<'one', TSchema, TFields>>(
-		config?: KnownKeysOnly<TSelection, DBQueryConfig<'one', TSchema, TFields>>,
-	): MySqlRelationalQuery<TPreparedQueryHKT, BuildQueryResult<TSchema, TFields, TSelection> | undefined> {
+	findFirst<TSelection extends DBQueryConfigWithComment<'one', TSchema, TFields>>(
+		config?: KnownKeysOnly<TSelection, DBQueryConfigWithComment<'one', TSchema, TFields>> & {
+			comment?: SqlCommenterInput;
+		},
+	): MySqlRelationalQuery<BuildQueryResult<TSchema, TFields, TSelection> | undefined> {
 		return new MySqlRelationalQuery(
 			this.schema,
 			this.table,
 			this.tableConfig,
 			this.dialect,
 			this.session,
-			config as DBQueryConfig<'one'> | undefined ?? true,
+			config as DBQueryConfigWithComment<'one'> | undefined ?? true,
 			'first',
 		);
 	}
 }
 
 export class MySqlRelationalQuery<
-	TPreparedQueryHKT extends PreparedQueryHKTBase,
 	TResult,
 > extends QueryPromise<TResult> {
 	static override readonly [entityKind]: string = 'MySqlRelationalQueryV2';
@@ -73,7 +74,7 @@ export class MySqlRelationalQuery<
 		private tableConfig: TableRelationalConfig,
 		private dialect: MySqlDialect,
 		private session: MySqlSession,
-		private config: DBQueryConfig<'many' | 'one'> | true,
+		private config: DBQueryConfigWithComment<'many' | 'one'> | true,
 		private mode: 'many' | 'first',
 	) {
 		super();
@@ -81,17 +82,20 @@ export class MySqlRelationalQuery<
 
 	prepare() {
 		const { query, builtQuery } = this._toSQL();
-		return this.session.prepareRelationalQuery(
+		const mapper = this.dialect.mapperGenerators.relationalRows({
+			isFirst: this.mode === 'first',
+			parseJson: false,
+			parseJsonIfString: false,
+			rootJsonMappers: false,
+			arrayModeRoot: true,
+			selection: query.selection,
+		});
+
+		return this.session.prepareQuery(
 			builtQuery,
-			undefined,
-			(rawRows) => {
-				const rows = rawRows.map((row) => mapRelationalRow(row, query.selection));
-				if (this.mode === 'first') {
-					return rows[0] as TResult;
-				}
-				return rows as TResult;
-			},
-		) as PreparedQueryKind<TPreparedQueryHKT, MySqlPreparedQueryConfig & { execute: TResult }, true>;
+			'arrays',
+			mapper,
+		) as MySqlPreparedQuery<MySqlPreparedQueryConfig & { execute: TResult }>;
 	}
 
 	private _getQuery() {
@@ -104,7 +108,7 @@ export class MySqlRelationalQuery<
 		});
 	}
 
-	private _toSQL(): { query: BuildRelationalQueryResult; builtQuery: QueryWithTypings } {
+	private _toSQL(): { query: BuildRelationalQueryResult; builtQuery: Query } {
 		const query = this._getQuery();
 
 		const builtQuery = this.dialect.sqlToQuery(query.sql);

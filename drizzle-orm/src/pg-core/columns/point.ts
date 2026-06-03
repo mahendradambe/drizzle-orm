@@ -1,4 +1,3 @@
-import type { ColumnBaseConfig } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import type { PgTable } from '~/pg-core/table.ts';
 import { type Equal, getColumnNameAndConfig } from '~/utils.ts';
@@ -24,8 +23,11 @@ export class PgPointTupleBuilder extends PgColumnBuilder<{
 	}
 }
 
-export class PgPointTuple<T extends ColumnBaseConfig<'array point'>> extends PgColumn<T> {
+export class PgPointTuple extends PgColumn<'array point'> {
 	static override readonly [entityKind]: string = 'PgPointTuple';
+
+	/** @internal */
+	override readonly codec = 'point:tuple';
 
 	readonly mode = 'tuple';
 
@@ -33,17 +35,9 @@ export class PgPointTuple<T extends ColumnBaseConfig<'array point'>> extends PgC
 		return 'point';
 	}
 
-	override mapFromDriverValue(value: string | { x: number; y: number }): [number, number] {
-		if (typeof value === 'string') {
-			const [x, y] = value.slice(1, -1).split(',');
-			return [Number.parseFloat(x!), Number.parseFloat(y!)];
-		}
-		return [value.x, value.y];
-	}
-
-	override mapToDriverValue(value: [number, number]): string {
+	override mapToDriverValue = (value: [number, number]): string => {
 		return `(${value[0]},${value[1]})`;
-	}
+	};
 }
 
 export class PgPointObjectBuilder extends PgColumnBuilder<{
@@ -66,8 +60,11 @@ export class PgPointObjectBuilder extends PgColumnBuilder<{
 	}
 }
 
-export class PgPointObject<T extends ColumnBaseConfig<'object point'>> extends PgColumn<T> {
+export class PgPointObject extends PgColumn<'object point'> {
 	static override readonly [entityKind]: string = 'PgPointObject';
+
+	/** @internal */
+	override readonly codec = 'point';
 
 	readonly mode = 'xy';
 
@@ -75,17 +72,9 @@ export class PgPointObject<T extends ColumnBaseConfig<'object point'>> extends P
 		return 'point';
 	}
 
-	override mapFromDriverValue(value: string | { x: number; y: number }): { x: number; y: number } {
-		if (typeof value === 'string') {
-			const [x, y] = value.slice(1, -1).split(',');
-			return { x: Number.parseFloat(x!), y: Number.parseFloat(y!) };
-		}
-		return value;
-	}
-
-	override mapToDriverValue(value: { x: number; y: number }): string {
+	override mapToDriverValue = (value: { x: number; y: number }): string => {
 		return `(${value.x},${value.y})`;
-	}
+	};
 }
 
 export interface PgPointConfig<T extends 'tuple' | 'xy' = 'tuple' | 'xy'> {

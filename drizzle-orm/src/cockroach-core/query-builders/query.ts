@@ -7,11 +7,12 @@ import {
 	type TablesRelationalConfig,
 } from '~/_relations.ts';
 import { entityKind } from '~/entity.ts';
+import { preparedStatementName } from '~/query-name-generator.ts';
 import { QueryPromise } from '~/query-promise.ts';
 import type { RunnableQuery } from '~/runnable-query.ts';
 import type { Query, SQL, SQLWrapper } from '~/sql/sql.ts';
 import { tracer } from '~/tracing.ts';
-import type { KnownKeysOnly, NeonAuthToken } from '~/utils.ts';
+import type { KnownKeysOnly } from '~/utils.ts';
 import type { CockroachDialect } from '../dialect.ts';
 import type { CockroachPreparedQuery, CockroachSession, PreparedQueryConfig } from '../session.ts';
 import type { CockroachTable } from '../table.ts';
@@ -87,15 +88,14 @@ export class CockroachRelationalQuery<TResult> extends QueryPromise<TResult>
 	}
 
 	/** @internal */
-	_prepare(name?: string): CockroachPreparedQuery<PreparedQueryConfig & { execute: TResult }> {
+	_prepare(name?: string, generateName = false): CockroachPreparedQuery<PreparedQueryConfig & { execute: TResult }> {
 		return tracer.startActiveSpan('drizzle.prepareQuery', () => {
 			const { query, builtQuery } = this._toSQL();
 
 			return this.session.prepareQuery<PreparedQueryConfig & { execute: TResult }>(
 				builtQuery,
 				undefined,
-				name,
-				true,
+				name ?? (generateName ? preparedStatementName(builtQuery.sql, builtQuery.params) : name),
 				(rawRows, mapColumnValue) => {
 					const rows = rawRows.map((row) =>
 						mapRelationalRow(this.schema, this.tableConfig, row, query.selection, mapColumnValue)
@@ -109,8 +109,8 @@ export class CockroachRelationalQuery<TResult> extends QueryPromise<TResult>
 		});
 	}
 
-	prepare(name: string): CockroachPreparedQuery<PreparedQueryConfig & { execute: TResult }> {
-		return this._prepare(name);
+	prepare(name?: string): CockroachPreparedQuery<PreparedQueryConfig & { execute: TResult }> {
+		return this._prepare(name, true);
 	}
 
 	private _getQuery() {
@@ -133,7 +133,7 @@ export class CockroachRelationalQuery<TResult> extends QueryPromise<TResult>
 	private _toSQL(): { query: BuildRelationalQueryResult; builtQuery: Query } {
 		const query = this._getQuery();
 
-		const { typings: _typings, ...builtQuery } = this.dialect.sqlToQuery(query.sql as SQL);
+		const builtQuery = this.dialect.sqlToQuery(query.sql as SQL);
 
 		return { query, builtQuery };
 	}
@@ -142,16 +142,9 @@ export class CockroachRelationalQuery<TResult> extends QueryPromise<TResult>
 		return this._toSQL().builtQuery;
 	}
 
-	private authToken?: NeonAuthToken;
-	/** @internal */
-	setToken(token?: NeonAuthToken) {
-		this.authToken = token;
-		return this;
-	}
-
 	override execute(): Promise<TResult> {
 		return tracer.startActiveSpan('drizzle.operation', () => {
-			return this._prepare().execute(undefined, this.authToken);
+			return this._prepare().execute(undefined);
 		});
 	}
 }

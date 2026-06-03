@@ -3,6 +3,7 @@ import {
 	type AnyMySqlColumn,
 	bigint,
 	binary,
+	blob,
 	boolean,
 	char,
 	customType,
@@ -15,13 +16,11 @@ import {
 	json,
 	mediumint,
 	mysqlEnum,
-	mysqlSchema,
-	mysqlTable,
-	mysqlView,
 	primaryKey,
 	real,
 	serial,
 	smallint,
+	snakeCase,
 	text,
 	time,
 	timestamp,
@@ -32,9 +31,8 @@ import {
 } from 'drizzle-orm/mysql-core';
 
 import { eq, getTableColumns, ne, sql } from 'drizzle-orm';
-import { relations } from 'drizzle-orm/_relations';
 
-export const usersTable = mysqlTable('users', {
+export const usersTable = snakeCase.table('users', {
 	id: serial().primaryKey(),
 	name: text().notNull(),
 	verified: boolean().notNull().default(false),
@@ -43,7 +41,7 @@ export const usersTable = mysqlTable('users', {
 	),
 });
 
-const schemaV1 = mysqlSchema('schemaV1');
+const schemaV1 = snakeCase.schema('schemaV1');
 
 export const usersV1 = schemaV1.table('usersV1', {
 	id: serial('id').primaryKey(),
@@ -59,26 +57,13 @@ export const usersTableV1 = schemaV1.table('users_table_V1', {
 	invitedBy: bigint('invited_by', { mode: 'number' }),
 });
 
-export const usersConfig = relations(usersTable, ({ one, many }) => ({
-	invitee: one(usersTable, {
-		fields: [usersTable.invitedBy],
-		references: [usersTable.id],
-	}),
-	usersToGroups: many(usersToGroupsTable),
-	posts: many(postsTable),
-	comments: many(commentsTable),
-}));
-
-export const groupsTable = mysqlTable('groups', {
+export const groupsTable = snakeCase.table('groups', {
 	id: serial().primaryKey(),
 	name: text().notNull(),
 	description: text(),
 });
-export const groupsConfig = relations(groupsTable, ({ many }) => ({
-	usersToGroups: many(usersToGroupsTable),
-}));
 
-export const usersToGroupsTable = mysqlTable(
+export const usersToGroupsTable = snakeCase.table(
 	'users_to_groups',
 	{
 		id: serial().primaryKey(),
@@ -91,18 +76,8 @@ export const usersToGroupsTable = mysqlTable(
 	},
 	(t) => [primaryKey({ columns: [t.userId, t.groupId] })],
 );
-export const usersToGroupsConfig = relations(usersToGroupsTable, ({ one }) => ({
-	group: one(groupsTable, {
-		fields: [usersToGroupsTable.groupId],
-		references: [groupsTable.id],
-	}),
-	user: one(usersTable, {
-		fields: [usersToGroupsTable.userId],
-		references: [usersTable.id],
-	}),
-}));
 
-export const postsTable = mysqlTable('posts', {
+export const postsTable = snakeCase.table('posts', {
 	id: serial().primaryKey(),
 	content: text().notNull(),
 	ownerId: bigint({ mode: 'number' }).references(
@@ -112,15 +87,8 @@ export const postsTable = mysqlTable('posts', {
 		.notNull()
 		.defaultNow(),
 });
-export const postsConfig = relations(postsTable, ({ one, many }) => ({
-	author: one(usersTable, {
-		fields: [postsTable.ownerId],
-		references: [usersTable.id],
-	}),
-	comments: many(commentsTable),
-}));
 
-export const usersView = mysqlView('rqb_users_view').as((qb) =>
+export const usersView = snakeCase.view('rqb_users_view').as((qb) =>
 	qb.select({
 		...getTableColumns(usersTable),
 		postContent: postsTable.content,
@@ -135,7 +103,7 @@ export const usersView = mysqlView('rqb_users_view').as((qb) =>
 		.from(usersTable).leftJoin(postsTable, eq(usersTable.id, postsTable.ownerId))
 );
 
-export const commentsTable = mysqlTable('comments', {
+export const commentsTable = snakeCase.table('comments', {
 	id: serial().primaryKey(),
 	content: text().notNull(),
 	creator: bigint({ mode: 'number' }).references(
@@ -146,19 +114,8 @@ export const commentsTable = mysqlTable('comments', {
 		.notNull()
 		.defaultNow(),
 });
-export const commentsConfig = relations(commentsTable, ({ one, many }) => ({
-	post: one(postsTable, {
-		fields: [commentsTable.postId],
-		references: [postsTable.id],
-	}),
-	author: one(usersTable, {
-		fields: [commentsTable.creator],
-		references: [usersTable.id],
-	}),
-	likes: many(commentLikesTable),
-}));
 
-export const commentLikesTable = mysqlTable('comment_likes', {
+export const commentLikesTable = snakeCase.table('comment_likes', {
 	id: serial().primaryKey(),
 	creator: bigint({ mode: 'number' }).references(
 		() => usersTable.id,
@@ -170,18 +127,8 @@ export const commentLikesTable = mysqlTable('comment_likes', {
 		.notNull()
 		.defaultNow(),
 });
-export const commentLikesConfig = relations(commentLikesTable, ({ one }) => ({
-	comment: one(commentsTable, {
-		fields: [commentLikesTable.commentId],
-		references: [commentsTable.id],
-	}),
-	author: one(usersTable, {
-		fields: [commentLikesTable.creator],
-		references: [usersTable.id],
-	}),
-}));
 
-export const rqbSchema = mysqlSchema('rqb_test_schema');
+export const rqbSchema = snakeCase.schema('rqb_test_schema');
 
 export const schemaUsers = rqbSchema.table('users', {
 	id: serial().primaryKey(),
@@ -240,8 +187,14 @@ export const schemaUsersView = rqbSchema.view('users_sch_view').as((qb) =>
 		.from(schemaUsers).leftJoin(schemaPosts, eq(schemaUsers.id, schemaPosts.ownerId))
 );
 
-export const allTypesTable = mysqlTable('all_types', {
+export const allTypesTable = snakeCase.table('all_types', {
 	serial: serial(),
+	blob: blob({
+		mode: 'buffer',
+	}),
+	blobStr: blob({
+		mode: 'string',
+	}),
 	bigint53: bigint({
 		mode: 'number',
 	}),
@@ -301,17 +254,17 @@ export const allTypesTable = mysqlTable('all_types', {
 	enum: mysqlEnum(['enV1', 'enV2']),
 });
 
-export const students = mysqlTable('students', {
+export const students = snakeCase.table('students', {
 	studentId: serial('student_id').primaryKey().notNull(),
 	name: text().notNull(),
 });
 
-export const courseOfferings = mysqlTable('course_offerings', {
+export const courseOfferings = snakeCase.table('course_offerings', {
 	courseId: int('course_id').notNull(),
 	semester: varchar({ length: 10 }).notNull(),
 });
 
-export const studentGrades = mysqlTable('student_grades', {
+export const studentGrades = snakeCase.table('student_grades', {
 	studentId: int('student_id').notNull(),
 	courseId: int('course_id').notNull(),
 	semester: varchar({ length: 10 }).notNull(),
@@ -367,7 +320,7 @@ const customInt = customType<{
 	dataType: () => 'int',
 });
 
-export const customTypesTable = mysqlTable('custom_types', {
+export const customTypesTable = snakeCase.table('custom_types', {
 	id: int('id'),
 	big: customBigInt(),
 	bytes: customBytes(),

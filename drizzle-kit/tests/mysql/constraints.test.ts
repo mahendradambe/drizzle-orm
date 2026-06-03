@@ -574,6 +574,35 @@ test('index #1', async () => {
 	expect(pst1).toStrictEqual(expectedSt1);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/4962
+test('functional index #1', async () => {
+	const table1 = mysqlTable('table1', {
+		id: varchar('id', { length: 21 }).primaryKey().notNull(),
+		otherId: varchar('other_id', { length: 21 }),
+		url: varchar('url', { length: 2048 }),
+	}, (table) => [
+		uniqueIndex('uniqueUrl').on(
+			table.otherId,
+			sql`${table.url}(747)`,
+		),
+	]);
+	const schema1 = { table1 };
+
+	const { sqlStatements: st1 } = await diff({}, schema1, []);
+	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
+
+	const expectedSt1 = [
+		'CREATE TABLE `table1` (\n'
+		+ '\t`id` varchar(21) PRIMARY KEY,\n'
+		+ '\t`other_id` varchar(21),\n'
+		+ '\t`url` varchar(2048),\n'
+		+ '\tCONSTRAINT `uniqueUrl` UNIQUE INDEX(`other_id`,`url`(747))\n'
+		+ ');\n',
+	];
+	expect(st1).toStrictEqual(expectedSt1);
+	expect(pst1).toStrictEqual(expectedSt1);
+});
+
 // https://github.com/drizzle-team/drizzle-orm/issues/4221
 test('fk on char column', async () => {
 	function column1() {
@@ -682,6 +711,38 @@ test('fk multistep #1', async () => {
 	expect(pst2).toStrictEqual(expectedSt2);
 });
 
+test('cyclic fk with custom names', async () => {
+	await db.query(`CREATE TABLE \`Users\` (
+	\`id\` int primary key,
+	\`inviteId\` int
+);`);
+	await db.query(`CREATE TABLE \`InviteCode\` (
+	\`id\` int primary key,
+	\`inviterUserId\` int
+);`);
+	await db.query(
+		'ALTER TABLE `Users` ADD CONSTRAINT `usersToInviteCode` FOREIGN KEY (`inviteId`) REFERENCES `InviteCode` (`id`);',
+	);
+	await db.query(
+		'ALTER TABLE `InviteCode` ADD CONSTRAINT `InviteCodeToUsers` FOREIGN KEY (`inviterUserId`) REFERENCES `Users` (`id`);',
+	);
+
+	const inviteCode = mysqlTable('InviteCode', {
+		id: int().primaryKey(),
+		inviterUserId: int().references((): AnyMySqlColumn => users.id),
+	});
+
+	const users = mysqlTable('Users', {
+		id: int().primaryKey(),
+		inviteId: int().references((): AnyMySqlColumn => inviteCode.id),
+	});
+
+	const schema1 = { inviteCode, users };
+
+	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
+	expect(pst1).toStrictEqual([]);
+});
+
 // https://github.com/drizzle-team/drizzle-orm/issues/265
 // https://github.com/drizzle-team/drizzle-orm/issues/3293
 // https://github.com/drizzle-team/drizzle-orm/issues/2018
@@ -763,8 +824,8 @@ test('adding autoincrement to table with pk #1', async () => {
 	expect(pst2).toStrictEqual(expectedSt2);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/5301
 test('adding autoincrement to table with pk #2', async () => {
-	// TODO: revise: I can successfully run all the queries manually, but somehow it throws error in the test
 	const schema1 = {
 		table1: mysqlTable('table1', {
 			column1: int().notNull(),
@@ -777,7 +838,7 @@ test('adding autoincrement to table with pk #2', async () => {
 	const { next: n1, sqlStatements: st1 } = await diff({}, schema1, []);
 	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
 	const expectedSt1: string[] = [
-		'CREATE TABLE `table1` (\n\t`column1` int NOT NULL,\n\t`column2` int,\n\tCONSTRAINT `PRIMARY` PRIMARY KEY(`column1`,`column2`)\n);\n',
+		'CREATE TABLE `table1` (\n\t`column1` int NOT NULL,\n\t`column2` int,\n\tCONSTRAINT PRIMARY KEY(`column1`,`column2`)\n);\n',
 	];
 
 	expect(st1).toStrictEqual(expectedSt1);
@@ -864,6 +925,173 @@ test('adding autoincrement to table with unique #2', async () => {
 	expect(pst).toStrictEqual(expectedSt);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/2458
+test('composite pk #1', async () => {
+	const schema = {
+		account: mysqlTable('Account', {
+			provider: varchar('provider', { length: 255 }).notNull(),
+			providerAccountId: varchar('providerAccountId', { length: 255 }).notNull(),
+		}, (table) => [
+			primaryKey({ columns: [table.provider, table.providerAccountId] }),
+		]),
+	};
+
+	const { next: n1 } = await diff({}, schema, []);
+	await push({ db, to: schema });
+
+	const { sqlStatements: st2 } = await diff(n1, schema, []);
+	const { sqlStatements: pst2 } = await push({ db, to: schema });
+	expect(st2).toStrictEqual([]);
+	expect(pst2).toStrictEqual([]);
+});
+
+test('pk multistep #1', async () => {
+	const teamStats1 = mysqlTable('team_stats', {
+		col1: int().unique().primaryKey(),
+		col2: int(),
+		col3: int(),
+	});
+
+	const schema1 = {
+		teamStats1,
+		table2: mysqlTable('table2', {
+			teamStatsCol1: int().references(() => teamStats1.col1),
+		}),
+	};
+
+	const { next: n1, sqlStatements: st1 } = await diff({}, schema1, []);
+	await push({ db, to: schema1 });
+
+	const teamStats2 = mysqlTable('team_stats', {
+		col1: int().unique(),
+		col2: int(),
+		col3: int(),
+	}, (t) => [
+		primaryKey({ columns: [t.col2, t.col3] }),
+	]);
+
+	const schema2 = {
+		teamStats2,
+		table2: mysqlTable('table2', {
+			teamStatsCol1: int().references(() => teamStats2.col1),
+		}),
+	};
+
+	const { sqlStatements: st2 } = await diff(n1, schema2, []);
+	const { sqlStatements: pst2 } = await push({ db, to: schema2 });
+	const expectedSql2 = [
+		'ALTER TABLE `table2` DROP CONSTRAINT `table2_teamStatsCol1_team_stats_col1_fkey`;',
+		'ALTER TABLE `team_stats` DROP PRIMARY KEY;',
+		'ALTER TABLE `team_stats` MODIFY COLUMN `col1` int;',
+		'ALTER TABLE `team_stats` ADD PRIMARY KEY (`col2`,`col3`);',
+		'ALTER TABLE `table2` ADD CONSTRAINT `table2_teamStatsCol1_team_stats_col1_fkey` FOREIGN KEY (`teamStatsCol1`) REFERENCES `team_stats`(`col1`);',
+	];
+	expect(st2).toStrictEqual(expectedSql2);
+	expect(pst2).toStrictEqual(expectedSql2);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/1144
+test('pk multistep #2', async () => {
+	const teamStats1 = mysqlTable('team_stats', {
+		col1: int().primaryKey(),
+		col2: int(),
+		col3: int(),
+	});
+
+	const schema1 = {
+		teamStats1,
+		table2: mysqlTable('table2', {
+			teamStatsCol1: int().references(() => teamStats1.col1),
+		}),
+	};
+
+	const { next: n1 } = await diff({}, schema1, []);
+	await push({ db, to: schema1 });
+
+	const teamStats2 = mysqlTable('team_stats', {
+		col1: int().unique(),
+		col2: int(),
+		col3: int(),
+	}, (t) => [
+		primaryKey({ columns: [t.col2, t.col3] }),
+	]);
+
+	const schema2 = {
+		teamStats2,
+		table2: mysqlTable('table2', {
+			teamStatsCol1: int().references(() => teamStats2.col1),
+		}),
+	};
+
+	const { sqlStatements: st2 } = await diff(n1, schema2, []);
+	const { sqlStatements: pst2 } = await push({ db, to: schema2 });
+	const expectedSql2 = [
+		'ALTER TABLE `table2` DROP CONSTRAINT `table2_teamStatsCol1_team_stats_col1_fkey`;',
+		'ALTER TABLE `team_stats` DROP PRIMARY KEY;',
+		'ALTER TABLE `team_stats` MODIFY COLUMN `col1` int;',
+		'ALTER TABLE `team_stats` ADD PRIMARY KEY (`col2`,`col3`);',
+		'CREATE UNIQUE INDEX `col1_unique` ON `team_stats` (`col1`);',
+		'ALTER TABLE `table2` ADD CONSTRAINT `table2_teamStatsCol1_team_stats_col1_fkey` FOREIGN KEY (`teamStatsCol1`) REFERENCES `team_stats`(`col1`);',
+	];
+	expect(st2).toStrictEqual(expectedSql2);
+	expect(pst2).toStrictEqual(expectedSql2);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/1144
+test('pk multistep #3', async () => {
+	const teamStats1 = mysqlTable('team_stats', {
+		col1: int().primaryKey(),
+		col2: int(),
+		col3: int(),
+	});
+
+	const schema1 = {
+		teamStats1,
+		table2: mysqlTable('table2', {
+			teamStatsCol1: int().references(() => teamStats1.col1),
+		}),
+	};
+
+	const { next: n1 } = await diff({}, schema1, []);
+	await push({ db, to: schema1 });
+
+	const teamStats2 = mysqlTable('team_stats', {
+		col1: int(),
+		col2: int(),
+		col3: int(),
+	}, (t) => [
+		primaryKey({ columns: [t.col2, t.col3] }),
+	]);
+
+	const schema2 = {
+		teamStats2,
+		table2: mysqlTable('table2', {
+			teamStatsCol1: int().references(() => teamStats2.col1),
+		}),
+	};
+
+	const { sqlStatements: st2, suggestion } = await diff(n1, schema2, []);
+	const { sqlStatements: pst2, hints } = await push({ db, to: schema2, ignoreSubsequent: true, expectError: true });
+
+	expect(suggestion.errors).toStrictEqual([
+		`· You are trying to drop primary key from "team_stats" ("col1"), but there is an existing reference on this column. You must either add a UNIQUE constraint to ("col1") or drop the foreign key constraint that references this column.`,
+	]);
+	expect(hints).toStrictEqual([{
+		hint:
+			'· You are trying to drop primary key from "team_stats" ("col1"), but there is an existing reference on this column. You must either add a UNIQUE constraint to ("col1") or drop the foreign key constraint that references this column.',
+	}]);
+
+	const expectedSql2: string[] = [
+		'ALTER TABLE `table2` DROP CONSTRAINT `table2_teamStatsCol1_team_stats_col1_fkey`;',
+		'ALTER TABLE `team_stats` DROP PRIMARY KEY;',
+		'ALTER TABLE `team_stats` MODIFY COLUMN `col1` int;',
+		'ALTER TABLE `team_stats` ADD PRIMARY KEY (`col2`,`col3`);',
+		'ALTER TABLE `table2` ADD CONSTRAINT `table2_teamStatsCol1_team_stats_col1_fkey` FOREIGN KEY (`teamStatsCol1`) REFERENCES `team_stats`(`col1`);',
+	];
+	expect(st2).toStrictEqual(expectedSql2);
+	expect(pst2).toStrictEqual(expectedSql2);
+});
+
 // https://github.com/drizzle-team/drizzle-orm/issues/3471
 test('drop column with pk and add pk to another column #1', async () => {
 	const schema1 = {
@@ -917,7 +1145,7 @@ test('drop column with pk and add pk to another column #2', async () => {
 	const expectedSt1 = [
 		'CREATE TABLE `table1` (\n\t`column1` varchar(256),\n\t`column2` varchar(256),'
 		+ '\n\t`column3` varchar(256) NOT NULL,\n\t`column4` varchar(256) NOT NULL,'
-		+ '\n\tCONSTRAINT `PRIMARY` PRIMARY KEY(`column1`,`column2`)\n);\n',
+		+ '\n\tCONSTRAINT PRIMARY KEY(`column1`,`column2`)\n);\n',
 	];
 	expect(st1).toStrictEqual(expectedSt1);
 	expect(pst1).toStrictEqual(expectedSt1);
@@ -958,7 +1186,7 @@ test('drop column with pk and add pk to another column #3', async () => {
 	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
 	const expectedSt1 = [
 		'CREATE TABLE `authors` (\n\t`publication_id` varchar(64),\n\t`author_id` varchar(10),'
-		+ '\n\tCONSTRAINT `PRIMARY` PRIMARY KEY(`publication_id`,`author_id`)\n);\n',
+		+ '\n\tCONSTRAINT PRIMARY KEY(`publication_id`,`author_id`)\n);\n',
 	];
 	expect(st1).toStrictEqual(expectedSt1);
 	expect(pst1).toStrictEqual(expectedSt1);
@@ -984,4 +1212,30 @@ test('drop column with pk and add pk to another column #3', async () => {
 
 	expect(st2).toStrictEqual(expectedSt2);
 	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/4704
+test('issue No4704. Composite index with sort outputs', async () => {
+	const schema1 = {
+		table: mysqlTable(
+			'table',
+			{ col1: int(), col2: int(), col3: int() },
+			(table) => [
+				index('table_composite_idx').on(
+					table.col1,
+					table.col2,
+					desc(table.col3), // Attempting to sort by col3 DESC
+				),
+			],
+		),
+	};
+
+	const { sqlStatements: st1, next: n1 } = await diff({}, schema1, []);
+	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
+	const expectedSt1 = [
+		'CREATE TABLE `table` (\n\t`col1` int,\n\t`col2` int,\n\t`col3` int\n);\n',
+		'CREATE INDEX `table_composite_idx` ON `table` (`col1`,`col2`,`col3` desc);',
+	];
+	expect(st1).toStrictEqual(expectedSt1);
+	expect(pst1).toStrictEqual(expectedSt1);
 });

@@ -1,24 +1,26 @@
 import { ddlDiff, ddlDiffDry } from 'src/dialects/sqlite/diff';
 import { fromDrizzleSchema, prepareFromSchemaFiles } from 'src/dialects/sqlite/drizzle';
-import { prepareFilenames, prepareOutFolder } from 'src/utils/utils-node';
+import { prepareOutFolder } from 'src/utils/utils-node';
 import { type Column, createDDL, interimToDDL, type SqliteEntities } from '../../dialects/sqlite/ddl';
 import { prepareSqliteSnapshot } from '../../dialects/sqlite/serializer';
 import { resolver } from '../prompts';
-import { warning } from '../views';
+import { sqliteSchemaError, warning } from '../views';
+import type { CheckHandlerResult } from './check';
 import { writeResult } from './generate-common';
 import type { ExportConfig, GenerateConfig } from './utils';
 
-export const handle = async (config: GenerateConfig) => {
-	const outFolder = config.out;
-	const schemaPath = config.schema;
-	const casing = config.casing;
+export const handle = async (
+	config: GenerateConfig,
+	checkResult?: CheckHandlerResult,
+) => {
+	const { out: outFolder, filenames } = config;
 
 	try {
 		const { snapshots } = prepareOutFolder(outFolder);
 		const { ddlCur, ddlPrev, snapshot, custom } = await prepareSqliteSnapshot(
 			snapshots,
-			schemaPath,
-			casing,
+			filenames,
+			checkResult,
 		);
 		if (config.custom) {
 			writeResult({
@@ -29,7 +31,6 @@ export const handle = async (config: GenerateConfig) => {
 				breakpoints: config.breakpoints,
 				bundle: config.bundle,
 				type: 'custom',
-				prefixMode: config.prefix,
 				renames: [],
 				snapshots,
 			});
@@ -43,12 +44,6 @@ export const handle = async (config: GenerateConfig) => {
 			'default',
 		);
 
-		// for (const { jsonStatement } of groupedStatements) {
-		// 	const msg = sqliteExplain(jsonStatement);
-		// 	console.log(msg?.title);
-		// 	console.log(msg?.cause);
-		// }
-
 		for (const w of warnings) {
 			warning(w);
 		}
@@ -61,7 +56,6 @@ export const handle = async (config: GenerateConfig) => {
 			name: config.name,
 			breakpoints: config.breakpoints,
 			bundle: config.bundle,
-			prefixMode: config.prefix,
 			driver: config.driver,
 			snapshots,
 		});
@@ -71,10 +65,15 @@ export const handle = async (config: GenerateConfig) => {
 };
 
 export const handleExport = async (config: ExportConfig) => {
-	const filenames = prepareFilenames(config.schema);
-	const res = await prepareFromSchemaFiles(filenames);
-	const schema = fromDrizzleSchema(res.tables, res.views, config.casing);
-	const { ddl } = interimToDDL(schema);
+	const res = await prepareFromSchemaFiles(config.filenames);
+	const schema = fromDrizzleSchema(res.tables, res.views);
+	const { ddl, errors } = interimToDDL(schema);
+
+	if (errors.length > 0) {
+		console.log(errors.map((it) => sqliteSchemaError(it)).join('\n'));
+		process.exit(1);
+	}
+
 	const { sqlStatements } = await ddlDiffDry(createDDL(), ddl, 'default');
 	console.log(sqlStatements.join('\n'));
 };

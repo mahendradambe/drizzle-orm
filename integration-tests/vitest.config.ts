@@ -10,6 +10,7 @@ export default defineConfig({
 			'js-tests',
 		],
 		exclude: [
+			'tests/singlestore/**/*.test.ts',
 			...(process.env['HANA_TEST_ENABLED']
 				? []
 				: [
@@ -24,6 +25,7 @@ export default defineConfig({
 					'tests/relational/mysql.planetscale.test.ts',
 					'tests/relational/mysql.planetscale-v1.test.ts',
 					'tests/pg/neon-serverless.test.ts',
+					'tests/pg/netlify-db.test.ts',
 					'tests/mysql/tidb-serverless.test.ts',
 					'tests/mysql/mysql-planetscale.test.ts',
 					'tests/sqlite/libsql.test.ts',
@@ -34,6 +36,7 @@ export default defineConfig({
 					'tests/sqlite/libsql-batch.test.ts',
 					'tests/pg/neon-http.test.ts',
 					'tests/pg/neon-http-batch.test.ts',
+					'tests/pg/netlify-db.test.ts',
 					'tests/sqlite/sqlite-cloud.test.ts',
 					'tests/utils/is-config.test.ts', // Uses external DBs in some cases
 					'js-tests/driver-init/commonjs/neon-http.test.cjs',
@@ -48,6 +51,7 @@ export default defineConfig({
 					'js-tests/driver-init/module/vercel.test.mjs',
 				]
 				: []),
+			'tests/pg/awsdatapi.test.ts',
 			'tests/awsdatapi.alltypes.test.ts',
 			'tests/relational/vercel.test.ts',
 			'tests/relational/vercel-v1.test.ts',

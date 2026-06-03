@@ -1,10 +1,11 @@
-import { and, eq, isNull, like, SQL, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, like, SQL, sql } from 'drizzle-orm';
 import {
 	boolean,
 	index,
 	integer,
 	pgEnum,
 	pgRole,
+	pgSchema,
 	pgTable,
 	serial,
 	text,
@@ -81,8 +82,15 @@ test('dropping basic index', async () => {
 			{
 				id: serial('id').primaryKey(),
 				name: text('name'),
+				id2: integer('id2'),
+				name2: text('name2'),
 			},
-			(t) => [index().on(t.name.desc(), t.id.asc().nullsLast()).with({ fillfactor: 70 })],
+			(
+				t,
+			) => [
+				index().on(t.name.desc(), t.id.asc().nullsLast()).with({ fillfactor: 70 }),
+				uniqueIndex().on(t.name2.desc(), t.id2.asc().nullsLast()).with({ fillfactor: 70 }),
+			],
 		),
 	};
 
@@ -90,6 +98,8 @@ test('dropping basic index', async () => {
 		users: pgTable('users', {
 			id: serial('id').primaryKey(),
 			name: text('name'),
+			id2: integer('id2'),
+			name2: text('name2'),
 		}),
 	};
 
@@ -98,10 +108,56 @@ test('dropping basic index', async () => {
 	await push({ db, to: schema1 });
 	const { sqlStatements: pst } = await push({ db, to: schema2 });
 
-	const st0 = [`DROP INDEX "users_name_id_index";`];
+	const st0 = [`DROP INDEX "users_name_id_index";`, `DROP INDEX "users_name2_id2_index";`];
 
-	expect(st).toStrictEqual(st0);
-	expect(pst).toStrictEqual(st0);
+	expect(st[0]).toBeOneOf([st0[0], st0[1]]);
+	expect(st[1]).toBeOneOf([st0[0], st0[1]]);
+	expect(pst[0]).toBeOneOf([st0[0], st0[1]]);
+	expect(pst[1]).toBeOneOf([st0[0], st0[1]]);
+});
+
+test('dropping basic index in other schema', async () => {
+	const schema = pgSchema('otherSchema');
+	const schema1 = {
+		schema,
+		users: schema.table(
+			'users',
+			{
+				id: serial('id').primaryKey(),
+				name: text('name'),
+				id2: integer('id2'),
+				name2: text('name2'),
+			},
+			(
+				t,
+			) => [
+				index().on(t.name.desc(), t.id.asc().nullsLast()).with({ fillfactor: 70 }),
+				uniqueIndex().on(t.name2.desc(), t.id2.asc().nullsLast()).with({ fillfactor: 70 }),
+			],
+		),
+	};
+
+	const schema2 = {
+		schema,
+		users: schema.table('users', {
+			id: serial('id').primaryKey(),
+			name: text('name'),
+			id2: integer('id2'),
+			name2: text('name2'),
+		}),
+	};
+
+	const { sqlStatements: st } = await diff(schema1, schema2, []);
+
+	await push({ db, to: schema1 });
+	const { sqlStatements: pst } = await push({ db, to: schema2 });
+
+	const st0 = [`DROP INDEX "otherSchema"."users_name_id_index";`, `DROP INDEX "otherSchema"."users_name2_id2_index";`];
+
+	expect(st[0]).toBeOneOf([st0[0], st0[1]]);
+	expect(st[1]).toBeOneOf([st0[0], st0[1]]);
+	expect(pst[0]).toBeOneOf([st0[0], st0[1]]);
+	expect(pst[1]).toBeOneOf([st0[0], st0[1]]);
 });
 
 test('altering indexes', async () => {
@@ -514,7 +570,7 @@ test('index #4', async (t) => {
 	expect(st).toStrictEqual([
 		`ALTER TABLE \"table\" RENAME COLUMN \"column2\" TO \"column3\";`,
 		`ALTER TABLE \"table\" DROP COLUMN \"bool\";`,
-		`ALTER TABLE \"table\" ADD COLUMN \"bool\" boolean GENERATED ALWAYS AS (((\"table\".\"column1\" is null) and (\"table\".\"column3\" is null))) STORED;`,
+		`ALTER TABLE \"table\" ADD COLUMN \"bool\" boolean GENERATED ALWAYS AS ((((\"table\".\"column1\" is null)) and ((\"table\".\"column3\" is null)))) STORED;`,
 		`CREATE INDEX "table_uid_bool_idx" ON "table" ("uid","bool");`,
 	]);
 	// push is not triggered on generated change
@@ -523,6 +579,7 @@ test('index #4', async (t) => {
 	]);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/2506
 // https://github.com/drizzle-team/drizzle-orm/issues/4790
 test('index #5', async (t) => {
 	const enum_ = pgEnum('enum', ['text', 'not_text']);
@@ -594,43 +651,139 @@ test('index #6', async (t) => {
 	expect(pst).toStrictEqual(st0);
 });
 
-// https://github.com/drizzle-team/drizzle-orm/issues/3255
-test('index #7', async () => {
+// https://github.com/drizzle-team/drizzle-orm/issues/5055
+test('index #8', async () => {
 	const table1 = pgTable('table1', {
-		col1: integer(),
-		col2: integer(),
+		eventAt: timestamp('eventAt').notNull().defaultNow(),
 	}, () => [
-		index1,
-		index2,
-		index3,
-		index4,
-		index5,
-		index6,
+		index('usage_item_eventAt_month_idx').on(sql.raw('date_trunc(\'month\', "eventAt")')),
 	]);
+	const schema1 = { table1 };
 
-	const index1 = uniqueIndex('index1').on(table1.col1);
-	const index2 = uniqueIndex('index2').on(table1.col1, table1.col2);
-	const index3 = index('index3').on(table1.col1);
-	const index4 = index('index4').on(table1.col1, table1.col2);
-	const index5 = index('index5').on(sql`${table1.col1} asc`);
-	const index6 = index('index6').on(sql`${table1.col1} asc`, sql`${table1.col2} desc`);
-
-	const schema1 = { table1, index1, index2, index3, index4, index5, index6 };
-
-	const { sqlStatements: st1 } = await diff({}, schema1, []);
+	const { sqlStatements: st1, next: n1 } = await diff({}, schema1, []);
 	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
 
 	const expectedSt1 = [
-		'CREATE TABLE "table1" (\n'
-		+ '\t"col1" integer,\n'
-		+ '\t"col2" integer\n'
-		+ ');\n',
-		'CREATE UNIQUE INDEX "index1" ON "table1" ("col1");',
-		'CREATE UNIQUE INDEX "index2" ON "table1" ("col1","col2");',
-		'CREATE INDEX "index3" ON "table1" ("col1");',
-		'CREATE INDEX "index4" ON "table1" ("col1","col2");',
-		'CREATE INDEX "index5" ON "table1" ("col1" asc);',
-		'CREATE INDEX "index6" ON "table1" ("col1" asc,"col2" desc);',
+		'CREATE TABLE "table1" (\n\t"eventAt" timestamp DEFAULT now() NOT NULL\n);\n',
+		`CREATE INDEX \"usage_item_eventAt_month_idx\" ON \"table1\" (date_trunc('month', \"eventAt\"));`,
+	];
+	expect(st1).toStrictEqual(expectedSt1);
+	expect(pst1).toStrictEqual(expectedSt1);
+
+	const { sqlStatements: st2 } = await diff(n1, schema1, []);
+	const { sqlStatements: pst2 } = await push({ db, to: schema1 });
+	expect(st2).toStrictEqual([]);
+	expect(pst2).toStrictEqual([]);
+});
+
+test('index #9', async () => {
+	const schema1 = {
+		table1: pgTable('table1', {
+			email: text().notNull(),
+		}, (table) => [
+			uniqueIndex('email_unique_idx').on(sql`lower(${table.email})`),
+		]),
+	};
+
+	const { sqlStatements: st1, next: n1 } = await diff({}, schema1, []);
+	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
+
+	const expectedSt1 = [
+		'CREATE TABLE "table1" (\n\t"email" text NOT NULL\n);\n',
+		`CREATE UNIQUE INDEX "email_unique_idx" ON "table1" (lower("email"));`,
+	];
+	expect(st1).toStrictEqual(expectedSt1);
+	expect(pst1).toStrictEqual(expectedSt1);
+
+	const schema2 = {
+		table1: pgTable('table1', {
+			email: text().notNull(),
+		}, (table) => [
+			uniqueIndex('email_unique_idx').on(table.email),
+		]),
+	};
+
+	const { sqlStatements: st2, next: n2 } = await diff(n1, schema2, []);
+	const { sqlStatements: pst2 } = await push({ db, to: schema2 });
+	const expectedSt2 = [
+		`DROP INDEX "email_unique_idx";`,
+		`CREATE UNIQUE INDEX "email_unique_idx" ON "table1" ("email");`,
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual([]); // diffs for columns on push are ignored
+
+	const { sqlStatements: st3 } = await diff(n2, schema2, []);
+	const { sqlStatements: pst3 } = await push({ db, to: schema2 });
+	expect(st3).toStrictEqual([]);
+	expect(pst3).toStrictEqual([]);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5467
+test('index in other schema', async () => {
+	const commonSchema = pgSchema('common');
+
+	const schema1 = {
+		commonSchema,
+		directoriesTable: commonSchema.table(
+			'filesystems_directories',
+			{
+				filesystemId: text(),
+			},
+			(table) => [index().on(table.filesystemId)],
+		),
+	};
+
+	const { sqlStatements: st1, next: n1 } = await diff({}, schema1, []);
+	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
+
+	const expectedSt1 = [
+		'CREATE SCHEMA "common";\n',
+		'CREATE TABLE "common"."filesystems_directories" (\n\t"filesystemId" text\n);\n',
+		`CREATE INDEX "filesystems_directories_filesystemId_index" ON "common"."filesystems_directories" ("filesystemId");`,
+	];
+	expect(st1).toStrictEqual(expectedSt1);
+	expect(pst1).toStrictEqual(expectedSt1);
+
+	const schema2 = {
+		commonSchema,
+		directoriesTable: commonSchema.table(
+			'filesystems_directories',
+			{
+				filesystemId: text(),
+			},
+		),
+	};
+
+	const { sqlStatements: st2, next: n2 } = await diff(n1, schema2, []);
+	const { sqlStatements: pst2 } = await push({ db, to: schema2 });
+	const expectedSt2 = [
+		`DROP INDEX "common"."filesystems_directories_filesystemId_index";`,
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5495
+test('access method issue', async () => {
+	await db.query(`CREATE EXTENSION IF NOT EXISTS vector;`);
+
+	const schema = {
+		table: pgTable(
+			'table',
+			{
+				id: integer(),
+				name: vector({ dimensions: 1536 }),
+			},
+			(table) => [index('idx_claims_embedding').using('ivfflat', table.name.asc().nullsLast().op('vector_cosine_ops'))],
+		),
+	};
+
+	const { sqlStatements: st1, next: n1 } = await diff({}, schema, []);
+	const { sqlStatements: pst1 } = await push({ db, to: schema });
+
+	const expectedSt1 = [
+		'CREATE TABLE "table" (\n\t"id" integer,\n\t"name" vector(1536)\n);\n',
+		'CREATE INDEX "idx_claims_embedding" ON "table" USING ivfflat ("name" vector_cosine_ops);',
 	];
 	expect(st1).toStrictEqual(expectedSt1);
 	expect(pst1).toStrictEqual(expectedSt1);

@@ -1,5 +1,9 @@
 import chalk from 'chalk';
 import { Prompt, render, SelectState, TaskView } from 'hanji';
+import type {
+	SchemaError as CockroachSchemaError,
+	SchemaWarning as CockroachSchemaWarning,
+} from 'src/dialects/cockroach/ddl';
 import type { SchemaError as MssqlSchemaError } from 'src/dialects/mssql/ddl';
 import type { SchemaError as MysqlSchemaError } from 'src/dialects/mysql/ddl';
 import type {
@@ -48,6 +52,16 @@ export const postgresSchemaWarning = (warning: PostgresSchemaWarning): string =>
 	assertUnreachable(warning.type);
 };
 
+export const cockroachSchemaWarning = (warning: CockroachSchemaWarning): string => {
+	if (warning.type === 'policy_not_linked') {
+		return withStyle.errorWarning(
+			`"Policy ${warning.policy} was skipped because it was not linked to any table. You should either include the policy in a table or use .link() on the policy to link it to any table you have. For more information, please check:`,
+		);
+	}
+
+	assertUnreachable(warning.type);
+};
+
 export const sqliteSchemaError = (error: SqliteSchemaError): string => {
 	if (error.type === 'conflict_table') {
 		return `'${error.table}' table name is a duplicate`;
@@ -65,8 +79,27 @@ export const sqliteSchemaError = (error: SqliteSchemaError): string => {
 		return `'${error.view}' view name is a duplicate`;
 	}
 
-	// assertUnreachable(error.type)
-	return '';
+	if (error.type === 'conflict_column') {
+		return `'${error.column}' column name is a duplicate across '${error.table}' table`;
+	}
+
+	if (error.type === 'conflict_fk') {
+		return `'${error.name}' foreign key name is a duplicate`;
+	}
+
+	if (error.type === 'conflict_index') {
+		return `'${error.name}' index name is a duplicate`;
+	}
+
+	if (error.type === 'conflict_pk') {
+		return `'${error.name}' primary key name is a duplicate`;
+	}
+
+	if (error.type === 'table_no_columns') {
+		return `'${error.table}' table has no columns`;
+	}
+
+	assertUnreachable(error);
 };
 
 function formatOptionChanges(
@@ -99,8 +132,11 @@ function formatOptionChanges(
 }
 
 export const explain = (
-	dialect: 'postgres' | 'mysql' | 'sqlite' | 'singlestore' | 'mssql' | 'common' | 'gel' | 'cockroach',
-	grouped: { jsonStatement: StatementPostgres | StatementSqlite | StatementMysql; sqlStatements: string[] }[],
+	dialect: 'postgres' | 'mysql' | 'sqlite' | 'singlestore' | 'mssql' | 'common' | 'cockroach',
+	grouped: {
+		jsonStatement: StatementPostgres | StatementSqlite | StatementMysql | StatementMssql | StatementCockraoch;
+		sqlStatements: string[];
+	}[],
 	explain: boolean,
 	hints: { hint: string; statement?: string }[],
 ) => {
@@ -113,6 +149,10 @@ export const explain = (
 			? sqliteExplain(jsonStatement as StatementSqlite)
 			: dialect === 'mysql'
 			? mysqlExplain(jsonStatement as StatementMysql)
+			: dialect === 'mssql'
+			? mssqlExplain(jsonStatement as StatementMssql)
+			: dialect === 'cockroach'
+			? cockroachExplain(jsonStatement as StatementCockraoch)
 			: null;
 
 		if (res) {
@@ -369,7 +409,7 @@ export const cockroachExplain = (st: StatementCockraoch) => {
 		title += `${key} index changed:`;
 		if (diff.isUnique) cause += `│ unique: ${diff.isUnique.from} -> ${diff.isUnique.to}\n`;
 		if (diff.where) cause += `│ where: ${diff.where.from} -> ${diff.where.to}\n`;
-		if (diff.method) cause += `│ where: ${diff.method.from} -> ${diff.method.to}\n`;
+		if (diff.method) cause += `│ method: ${diff.method.from} -> ${diff.method.to}\n`;
 	}
 
 	if (st.type === 'recreate_fk') {
@@ -736,29 +776,44 @@ export const sqliteExplain = (
 			const columnsAltered = fksAlters.filter((it) => it.columns);
 			const columnsToAltered = fksAlters.filter((it) => it.columnsTo);
 			const tablesToAltered = fksAlters.filter((it) => it.tableTo);
+			const onUpdateAltered = fksAlters.filter((it) => it.onUpdate);
+			const onDeleteAltered = fksAlters.filter((it) => it.onDelete);
 
-			res += `│ Foreign key constraint was altered:\n`;
-			if (columnsAltered) {
+			res += columnsAltered.length > 0 && columnsToAltered.length > 0 && tablesToAltered.length > 0
+					&& onUpdateAltered.length > 0 && onDeleteAltered.length > 0
+				? `│ Foreign key constraint was altered:\n`
+				: '';
+			if (columnsAltered.length) {
 				res += `${
 					columnsAltered.map((it) =>
 						`│ name: ${it.name} => columns: [${it.columns?.from.join(',')}] -> [${it.columns?.to.join(',')}]`
 					)
 				}\n`;
 			}
-			if (columnsToAltered) {
+			if (columnsToAltered.length) {
 				res += ` ${
 					columnsToAltered.map((it) =>
 						`│ name: ${it.name} => columnsTo: [${it.columnsTo?.from.join(',')}] -> [${it.columnsTo?.to.join(',')}]`
 					)
 				}\n`;
 			}
-			if (tablesToAltered) {
+			if (tablesToAltered.length) {
 				res += `${
 					tablesToAltered.map((it) => `│ name: ${it.name} => tableTo: [${it.tableTo?.from}] -> [${it.tableTo?.to}]`)
 				}\n`;
 			}
+			if (onUpdateAltered.length) {
+				res += `${
+					onUpdateAltered.map((it) => `│ name: ${it.name} => onUpdate: [${it.onUpdate?.from}] -> [${it.onUpdate?.to}]`)
+				}\n`;
+			}
+			if (onDeleteAltered.length) {
+				res += `${
+					onDeleteAltered.map((it) => `│ name: ${it.name} => onDelete: [${it.onDelete?.from}] -> [${it.onDelete?.to}]`)
+				}\n`;
+			}
 
-			blocks.push([res]);
+			if (res) blocks.push([res]);
 		}
 
 		if (fksDiff.length) {
@@ -887,8 +942,194 @@ export const postgresSchemaError = (error: PostgresSchemaError): string => {
 		return withStyle.errorWarning(`There's a sequence name duplicate '${error.name}' in '${error.schema}' schema`);
 	}
 
-	// assertUnreachable(error);
-	return '';
+	if (error.type === 'table_name_duplicate') {
+		const { name, schema } = error;
+		const schemaName = chalk.underline.blue(`"${schema}"`);
+		const tableName = chalk.underline.blue(`"${name}"`);
+		return withStyle.errorWarning(
+			`There's a duplicate table name ${tableName} in ${schemaName} schema`,
+		);
+	}
+
+	if (error.type === 'column_name_duplicate') {
+		const { name, schema, table } = error;
+		const tableName = chalk.underline.blue(`"${schema}"."${table}"`);
+		const columnName = chalk.underline.blue(`'${name}'`);
+		return withStyle.errorWarning(
+			`There's a duplicate column name ${columnName} in ${tableName} table`,
+		);
+	}
+
+	if (error.type === 'enum_name_duplicate') {
+		const { name, schema } = error;
+		const schemaName = chalk.underline.blue(`"${schema}"`);
+		const enumName = chalk.underline.blue(`'${name}'`);
+		return withStyle.errorWarning(
+			`There's a duplicate enum name ${enumName} in ${schemaName} schema`,
+		);
+	}
+
+	if (error.type === 'enum_values_duplicate') {
+		const { name, schema } = error;
+		const schemaName = chalk.underline.blue(`"${schema}"`);
+		const enumName = chalk.underline.blue(`'${name}'`);
+		return withStyle.errorWarning(
+			`There are duplicate values in enum ${enumName} in ${schemaName} schema`,
+		);
+	}
+
+	if (error.type === 'privilege_duplicate') {
+		const { name } = error;
+		const privilegeName = chalk.underline.blue(`'${name}'`);
+		return withStyle.errorWarning(
+			`There's a duplicate privilege name ${privilegeName}`,
+		);
+	}
+
+	if (error.type === 'role_duplicate') {
+		const { name } = error;
+		const roleName = chalk.underline.blue(`'${name}'`);
+		return withStyle.errorWarning(
+			`There's a duplicate role name ${roleName}`,
+		);
+	}
+
+	if (error.type === 'schema_name_duplicate') {
+		const { name } = error;
+		const schemaName = chalk.underline.blue(`'${name}'`);
+		return withStyle.errorWarning(
+			`There's a duplicate schema name ${schemaName}`,
+		);
+	}
+
+	assertUnreachable(error);
+};
+
+export const cockroachSchemaError = (error: CockroachSchemaError): string => {
+	if (error.type === 'constraint_name_duplicate') {
+		const { name, schema, table } = error;
+		const tableName = chalk.underline.blue(`"${schema}"."${table}"`);
+		const constraintName = chalk.underline.blue(`'${name}'`);
+		return withStyle.errorWarning(
+			`There's a duplicate constraint name ${constraintName} in ${tableName} table`,
+		);
+	}
+
+	if (error.type === 'index_duplicate') {
+		// check for index names duplicates
+		const { schema, table, name } = error;
+		const sch = chalk.underline.blue(`"${schema}"`);
+		const idx = chalk.underline.blue(`'${name}'`);
+		const tableName = chalk.underline.blue(`"${schema}"."${table}"`);
+		return withStyle.errorWarning(
+			`There's a duplicate index name ${idx} in ${sch} schema in ${tableName}`,
+		);
+	}
+
+	if (error.type === 'index_no_name') {
+		const { schema, table, sql } = error;
+		const tableName = chalk.underline.blue(`"${schema}"."${table}"`);
+		return withStyle.errorWarning(
+			`Please specify an index name in ${tableName} table that has "${sql}" expression.\n\nWe can generate index names for indexes on columns only; for expressions in indexes, you need to specify index name yourself.`,
+		);
+	}
+
+	if (error.type === 'pgvector_index_noop') {
+		const { table, indexName, column, method } = error;
+		return withStyle.errorWarning(
+			`You are specifying an index on the ${
+				chalk.blueBright(
+					`"${column}"`,
+				)
+			} column inside the ${
+				chalk.blueBright(
+					`"${table}"`,
+				)
+			} table with the ${
+				chalk.blueBright(
+					'vector',
+				)
+			} type without specifying an operator class. Vector extension doesn't have a default operator class, so you need to specify one of the available options. Here is a list of available op classes for the vector extension: [${
+				vectorOps
+					.map((it) => `${chalk.underline(`${it}`)}`)
+					.join(', ')
+			}].\n\nYou can specify it using current syntax: ${
+				chalk.underline(
+					`index("${indexName}").using("${method}", table.${column}.op("${vectorOps[0]}"))`,
+				)
+			}\n\nYou can check the "pg_vector" docs for more info: https://github.com/pgvector/pgvector?tab=readme-ov-file#indexing\n`,
+		);
+	}
+
+	if (error.type === 'policy_duplicate') {
+		const { schema, table, policy } = error;
+		const tableName = chalk.underline.blue(`"${schema}"."${table}"`);
+
+		return withStyle.errorWarning(
+			`We've found duplicated policy name across ${tableName} table. Please rename one of the policies with ${
+				chalk.underline.blue(
+					`"${policy}"`,
+				)
+			} name`,
+		);
+	}
+
+	if (error.type === 'view_name_duplicate') {
+		const schema = chalk.underline.blue(`"${error.schema ?? 'public'}"`);
+		const name = chalk.underline.blue(`"${error.name}"`);
+		return withStyle.errorWarning(
+			`There's a view duplicate name ${name} in ${schema} schema`,
+		);
+	}
+
+	if (error.type === 'sequence_name_duplicate') {
+		return withStyle.errorWarning(`There's a sequence name duplicate '${error.name}' in '${error.schema}' schema`);
+	}
+
+	if (error.type === 'column_name_duplicate') {
+		const { name, schema, table } = error;
+		const tableName = chalk.underline.blue(`"${schema}"."${table}"`);
+		const columnName = chalk.underline.blue(`'${name}'`);
+		return withStyle.errorWarning(
+			`There's a duplicate column name ${columnName} in ${tableName} table`,
+		);
+	}
+
+	if (error.type === 'enum_name_duplicate') {
+		const { name, schema } = error;
+		const schemaName = chalk.underline.blue(`"${schema}"`);
+		const enumName = chalk.underline.blue(`'${name}'`);
+		return withStyle.errorWarning(
+			`There's a duplicate enum name ${enumName} in ${schemaName} schema`,
+		);
+	}
+
+	if (error.type === 'table_name_duplicate') {
+		const { name, schema } = error;
+		const schemaName = chalk.underline.blue(`"${schema}"`);
+		const tableName = chalk.underline.blue(`"${name}"`);
+		return withStyle.errorWarning(
+			`There's a duplicate table name ${tableName} in ${schemaName} schema`,
+		);
+	}
+
+	if (error.type === 'schema_name_duplicate') {
+		const { name } = error;
+		const schemaName = chalk.underline.blue(`"${name}"`);
+		return withStyle.errorWarning(
+			`There's a duplicate schema name ${schemaName}`,
+		);
+	}
+
+	if (error.type === 'role_duplicate') {
+		const { name } = error;
+		const roleName = chalk.underline.blue(`"${name}"`);
+		return withStyle.errorWarning(
+			`There's a duplicate role name ${roleName}`,
+		);
+	}
+
+	assertUnreachable(error);
 };
 
 export const mysqlSchemaError = (error: MysqlSchemaError): string => {
@@ -939,7 +1180,6 @@ const users = mysqlTable('users', {
 	}
 
 	assertUnreachable(error);
-	return '';
 };
 
 export const mssqlSchemaError = (error: MssqlSchemaError): string => {
@@ -1171,7 +1411,7 @@ type EntityBase = { schema?: string; table?: string; name: string };
 
 const keyFor = (it: EntityBase, defaultSchema: 'dbo' | 'public' = 'public') => {
 	const schemaPrefix = it.schema && it.schema !== defaultSchema ? `${it.schema}.` : '';
-	const tablePrefix = it.table ? `${it.schema}.` : '';
+	const tablePrefix = it.table ? `${it.table}.` : '';
 	return `${schemaPrefix}${tablePrefix}${it.name}`;
 };
 
@@ -1425,7 +1665,9 @@ export class IntrospectProgress extends TaskView {
 		super();
 		this.timeout = setInterval(() => {
 			this.spinner.tick();
-			this.requestLayout();
+			if (this.terminal) {
+				this.requestLayout();
+			}
 		}, 128);
 
 		this.on('detach', () => clearInterval(this.timeout));
@@ -1438,7 +1680,9 @@ export class IntrospectProgress extends TaskView {
 	) {
 		this.state[stage].count = count;
 		this.state[stage].status = status;
-		this.requestLayout();
+		if (this.terminal) {
+			this.requestLayout();
+		}
 	}
 
 	private formatCount = (count: number) => {
@@ -1464,7 +1708,13 @@ export class IntrospectProgress extends TaskView {
 		return `${prefix} ${suffix}\n`;
 	};
 
-	render(): string {
+	render(
+		status: 'pending' | 'done' | 'rejected' = 'pending',
+		error?: Error,
+	): string {
+		if (status === 'rejected' && error) {
+			return `[${chalk.red('✗')}] Error during introspection:\n${chalk.red(error.message)}\n${error.stack ?? ''}\n`;
+		}
 		let info = '';
 		const spin = this.spinner.value();
 		info += this.statusText(spin, this.state.tables);
@@ -1494,7 +1744,18 @@ export class MigrateProgress extends TaskView {
 		this.on('detach', () => clearInterval(this.timeout));
 	}
 
-	render(status: 'pending' | 'done'): string {
+	render(status: 'pending' | 'done' | 'rejected', error?: Error): string {
+		if (status === 'rejected') {
+			if (error?.cause) {
+				console.log('\n');
+				console.log(error.cause); // render full object
+			}
+
+			return `[${chalk.red('✗')}] Error during migration:\n${
+				chalk.red(error ? error.message : 'unknown error occured')
+			}\n`;
+		}
+
 		if (status === 'pending') {
 			const spin = this.spinner.value();
 			return `[${spin}] applying migrations...`;
@@ -1526,7 +1787,18 @@ export class ProgressView extends TaskView {
 		this.on('detach', () => clearInterval(this.timeout));
 	}
 
-	render(status: 'pending' | 'done'): string {
+	render(status: 'pending' | 'done' | 'rejected', error?: Error): string {
+		if (status === 'rejected') {
+			if (error?.cause) {
+				console.log('\n');
+				console.log(error.cause); // render full object
+			}
+
+			return `[${chalk.red('✗')}] ${this.progressText}\n${
+				chalk.red(error ? error.message : 'unknown error occured')
+			}\n`;
+		}
+
 		if (status === 'pending') {
 			const spin = this.spinner.value();
 			return `[${spin}] ${this.progressText}\n`;

@@ -36,7 +36,7 @@ describe('Objects', (it) => {
 			isConfig({
 				casing: 'camelCase',
 			} as DrizzleConfig),
-		).toEqual(true);
+		).toEqual(false); // No more casings on DB
 
 		expect(
 			isConfig({
@@ -72,7 +72,7 @@ describe('Objects', (it) => {
 
 		expect(
 			isConfig({
-				casing: 'camelCase',
+				logger: true,
 				trash: true,
 			} as DrizzleConfig),
 		).toEqual(true);
@@ -461,7 +461,7 @@ describe('Accepts drivers in .client', (it) => {
 	});
 
 	it('mysql2/promise:Pool', async () => {
-		const cl = await ms2pPool({
+		const cl = ms2pPool({
 			uri: process.env['MYSQL_CONNECTION_STRING'],
 		});
 

@@ -1,6 +1,5 @@
 import { getTableName, is, SQL } from 'drizzle-orm';
 import { Relations } from 'drizzle-orm/_relations';
-import type { AnyGelColumn, GelDialect, GelPolicy } from 'drizzle-orm/gel-core';
 import type {
 	AnyPgColumn,
 	AnyPgTable,
@@ -20,7 +19,6 @@ import {
 	isPgMaterializedView,
 	isPgSequence,
 	isPgView,
-	PgArray,
 	PgDialect,
 	PgEnumColumn,
 	PgEnumObjectColumn,
@@ -37,10 +35,8 @@ import {
 	PgView,
 	uniqueKeyName,
 } from 'drizzle-orm/pg-core';
-import type { CasingType } from 'src/cli/validations/common';
-import { safeRegister } from 'src/utils/utils-node';
+import { loadModule } from 'src/utils/utils-node';
 import { assertUnreachable } from '../../utils';
-import { getColumnCasing } from '../drizzle';
 import type { EntityFilter } from '../pull-utils';
 import { getOrNull } from '../utils';
 import type {
@@ -75,7 +71,7 @@ import {
 	typeFor,
 } from './grammar';
 
-export const policyFrom = (policy: PgPolicy | GelPolicy, dialect: PgDialect | GelDialect) => {
+export const policyFrom = (policy: PgPolicy, dialect: PgDialect) => {
 	const mappedTo = !policy.to
 		? ['public']
 		: typeof policy.to === 'string'
@@ -113,10 +109,10 @@ export const policyFrom = (policy: PgPolicy | GelPolicy, dialect: PgDialect | Ge
 	};
 };
 
-export const unwrapColumn = (column: AnyPgColumn | AnyGelColumn) => {
-	const { baseColumn, dimensions } = is(column, PgArray)
-		? unwrapArray(column)
-		: { baseColumn: column, dimensions: 0 };
+export const unwrapColumn = (column: AnyPgColumn) => {
+	// In the new architecture, columns have a dimensions property directly
+	const dimensions = (column as any).dimensions ?? 0;
+	const baseColumn = column;
 
 	const isEnum = is(baseColumn, PgEnumColumn) || is(baseColumn, PgEnumObjectColumn);
 	const typeSchema = isEnum
@@ -143,16 +139,6 @@ export const unwrapColumn = (column: AnyPgColumn | AnyGelColumn) => {
 	};
 };
 
-export const unwrapArray = (
-	column: PgArray<any, any>,
-	dimensions: number = 1,
-): { baseColumn: AnyPgColumn; dimensions: number } => {
-	const baseColumn = column.baseColumn;
-	if (is(baseColumn, PgArray)) return unwrapArray(baseColumn, dimensions + 1);
-
-	return { baseColumn, dimensions };
-};
-
 export const transformOnUpdateDelete = (on: UpdateDeleteAction): ForeignKey['onUpdate'] => {
 	if (on === 'no action') return 'NO ACTION';
 	if (on === 'cascade') return 'CASCADE';
@@ -168,10 +154,10 @@ type JsonObject = { [key: string]: JsonValue };
 type JsonArray = JsonValue[];
 
 export const defaultFromColumn = (
-	base: AnyPgColumn | AnyGelColumn,
+	base: AnyPgColumn,
 	def: unknown,
 	dimensions: number,
-	dialect: PgDialect | GelDialect,
+	dialect: PgDialect,
 ): Column['default'] => {
 	if (typeof def === 'undefined') return null;
 
@@ -238,14 +224,13 @@ export const fromDrizzleSchema = (
 		views: PgView[];
 		matViews: PgMaterializedView[];
 	},
-	casing: CasingType | undefined,
 	filter: EntityFilter,
 ): {
 	schema: InterimSchema;
 	errors: SchemaError[];
 	warnings: SchemaWarning[];
 } => {
-	const dialect = new PgDialect({ casing });
+	const dialect = new PgDialect();
 	const errors: SchemaError[] = [];
 	const warnings: SchemaWarning[] = [];
 
@@ -294,6 +279,9 @@ export const fromDrizzleSchema = (
 		// @ts-ignore
 		const { schema: configSchema, name: tableName } = getTableConfig(policy._linkedTable);
 
+		// filter policies by linked table
+		if (!filter({ type: 'table', schema: configSchema ?? 'public', name: tableName })) continue;
+
 		const p = policyFrom(policy, dialect);
 		res.policies.push({
 			entityType: 'policies',
@@ -339,7 +327,7 @@ export const fromDrizzleSchema = (
 
 		res.columns.push(
 			...drizzleColumns.map<InterimColumn>((column) => {
-				const name = getColumnCasing(column, casing);
+				const { name } = column;
 
 				const isPk = column.primary
 					|| config.primaryKeys.find((pk) =>
@@ -416,7 +404,7 @@ export const fromDrizzleSchema = (
 
 		res.pks.push(
 			...drizzlePKs.map<PrimaryKey>((pk) => {
-				const columnNames = pk.columns.map((c) => getColumnCasing(c, casing));
+				const columnNames = pk.columns.map((c) => c.name);
 
 				const name = pk.name || defaultNameForPK(tableName);
 
@@ -433,7 +421,7 @@ export const fromDrizzleSchema = (
 
 		res.uniques.push(
 			...drizzleUniques.map<UniqueConstraint>((unq) => {
-				const columnNames = unq.columns.map((c) => getColumnCasing(c, casing));
+				const columnNames = unq.columns.map((c) => c.name);
 				const name = unq.isNameExplicit ? unq.name! : uniqueKeyName(table, columnNames);
 				return {
 					entityType: 'uniques',
@@ -455,8 +443,8 @@ export const fromDrizzleSchema = (
 
 				const tableTo = getTableName(reference.foreignTable);
 				const schemaTo = getTableConfig(reference.foreignTable).schema || 'public';
-				const columnsFrom = reference.columns.map((it) => getColumnCasing(it, casing));
-				const columnsTo = reference.foreignColumns.map((it) => getColumnCasing(it, casing));
+				const columnsFrom = reference.columns.map((it) => it.name);
+				const columnsTo = reference.foreignColumns.map((it) => it.name);
 
 				const name = fk.isNameExplicit() ? fk.getName() : defaultNameForFK(tableName, columnsFrom, tableTo, columnsTo);
 
@@ -496,7 +484,7 @@ export const fromDrizzleSchema = (
 					&& column.type === 'PgVector'
 					&& !column.indexConfig.opClass
 				) {
-					const columnName = getColumnCasing(column, casing);
+					const columnName = column.name;
 					errors.push({
 						type: 'pgvector_index_noop',
 						table: tableName,
@@ -513,7 +501,7 @@ export const fromDrizzleSchema = (
 				const columns = value.config.columns;
 
 				let indexColumnNames = columns.map((it) => {
-					const name = getColumnCasing(it as IndexedColumn, casing);
+					const name = (it as IndexedColumn).name;
 					return name;
 				});
 
@@ -537,7 +525,7 @@ export const fromDrizzleSchema = (
 						else nullsFirst = it.indexConfig?.nulls ? it.indexConfig.nulls === 'first' : nullsFirst;
 
 						return {
-							value: getColumnCasing(it as IndexedColumn, casing),
+							value: (it as IndexedColumn).name,
 							isExpression: false,
 							asc: asc,
 							nullsFirst: nullsFirst,
@@ -652,7 +640,23 @@ export const fromDrizzleSchema = (
 		});
 	}
 
-	const combinedViews = [...schema.views, ...schema.matViews].map((it) => {
+	const combinedViews = [...schema.views, ...schema.matViews].sort((a, b) => {
+		// this sort fixes this issue: https://github.com/drizzle-team/drizzle-orm/issues/4520
+		// When using `prepareFromSchemaFiles` to read schema files, views were returned in an unpredictable order
+		// (not in order that is was declared in schema.ts).
+		// This caused dependent views to appear before their dependencies,
+		// which breaks migration
+		const aConfig = is(a, PgView) ? getViewConfig(a) : getMaterializedViewConfig(a);
+		const bConfig = is(b, PgView) ? getViewConfig(b) : getMaterializedViewConfig(b);
+
+		// If a's fields include b, a depends on b -> b comes first
+		if (aConfig.query?.queryChunks.includes(b)) return 1;
+
+		// If b's fields include a, b depends on a -> a comes first
+		if (bConfig.query?.queryChunks.includes(a)) return -1;
+
+		return 0;
+	}).map((it) => {
 		if (is(it, PgView)) {
 			return {
 				...getViewConfig(it),
@@ -852,24 +856,22 @@ export const prepareFromSchemaFiles = async (imports: string[]) => {
 	const matViews: PgMaterializedView[] = [];
 	const relations: Relations[] = [];
 
-	await safeRegister(async () => {
-		for (let i = 0; i < imports.length; i++) {
-			const it = imports[i];
+	for (let i = 0; i < imports.length; i++) {
+		const it = imports[i];
 
-			const i0: Record<string, unknown> = require(`${it}`);
-			const prepared = fromExports(i0);
+		const i0: Record<string, unknown> = await loadModule(it);
+		const prepared = fromExports(i0);
 
-			tables.push(...prepared.tables);
-			enums.push(...prepared.enums);
-			schemas.push(...prepared.schemas);
-			sequences.push(...prepared.sequences);
-			views.push(...prepared.views);
-			matViews.push(...prepared.matViews);
-			roles.push(...prepared.roles);
-			policies.push(...prepared.policies);
-			relations.push(...prepared.relations);
-		}
-	});
+		tables.push(...prepared.tables);
+		enums.push(...prepared.enums);
+		schemas.push(...prepared.schemas);
+		sequences.push(...prepared.sequences);
+		views.push(...prepared.views);
+		matViews.push(...prepared.matViews);
+		roles.push(...prepared.roles);
+		policies.push(...prepared.policies);
+		relations.push(...prepared.relations);
+	}
 
 	return {
 		tables,

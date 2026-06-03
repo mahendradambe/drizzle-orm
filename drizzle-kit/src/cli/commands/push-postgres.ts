@@ -23,35 +23,35 @@ import { ddlDiff } from '../../dialects/postgres/diff';
 import { fromDrizzleSchema, prepareFromSchemaFiles } from '../../dialects/postgres/drizzle';
 import type { JsonStatement } from '../../dialects/postgres/statements';
 import type { DB } from '../../utils';
-import { prepareFilenames } from '../../utils/utils-node';
 import { highlightSQL } from '../highlighter';
 import { resolver } from '../prompts';
 import { Select } from '../selector-ui';
-import type { EntitiesFilterConfig } from '../validations/cli';
-import type { CasingType } from '../validations/common';
+import type { EntitiesFilterConfig } from '../validations/common';
 import type { PostgresCredentials } from '../validations/postgres';
 import { explain, postgresSchemaError, postgresSchemaWarning, ProgressView } from '../views';
 
 export const handle = async (
-	schemaPath: string | string[],
+	filenames: string[],
 	verbose: boolean,
 	credentials: PostgresCredentials,
 	filters: EntitiesFilterConfig,
 	force: boolean,
-	casing: CasingType | undefined,
 	explainFlag: boolean,
+	migrations: {
+		table: string;
+		schema: string;
+	},
 ) => {
 	const { preparePostgresDB } = await import('../connections');
 	const { introspect } = await import('./pull-postgres');
 
 	const db = await preparePostgresDB(credentials);
-	const filenames = prepareFilenames(schemaPath);
 	const res = await prepareFromSchemaFiles(filenames);
 
 	const existing = extractPostgresExisting(res.schemas, res.views, res.matViews);
 	const entityFilter = prepareEntityFilter('postgresql', filters, existing);
 
-	const { schema: schemaTo, errors, warnings } = fromDrizzleSchema(res, casing, entityFilter);
+	const { schema: schemaTo, errors, warnings } = fromDrizzleSchema(res, entityFilter);
 
 	if (warnings.length > 0) {
 		console.log(warnings.map((it) => postgresSchemaWarning(it)).join('\n\n'));
@@ -64,14 +64,20 @@ export const handle = async (
 
 	const progress = new ProgressView('Pulling schema from database...', 'Pulling schema from database...');
 
-	const { schema: schemaFrom } = await introspect(db, entityFilter, progress);
+	const { schema: schemaFrom } = await introspect(
+		db,
+		entityFilter,
+		progress,
+		() => {},
+		migrations,
+	);
 
-	const { ddl: ddl1, errors: errors1 } = interimToDDL(schemaFrom);
-	const { ddl: ddl2 } = interimToDDL(schemaTo);
+	const { ddl: ddl1 } = interimToDDL(schemaFrom);
+	const { ddl: ddl2, errors: errors1 } = interimToDDL(schemaTo);
 	// TODO: handle errors?
 
 	if (errors1.length > 0) {
-		console.log(errors.map((it) => postgresSchemaError(it)).join('\n'));
+		console.log(errors1.map((it) => postgresSchemaError(it)).join('\n'));
 		process.exit(1);
 	}
 

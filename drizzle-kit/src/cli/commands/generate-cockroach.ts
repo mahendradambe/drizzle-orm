@@ -1,5 +1,5 @@
 import { fromDrizzleSchema, prepareFromSchemaFiles } from 'src/dialects/cockroach/drizzle';
-import { prepareFilenames, prepareOutFolder } from 'src/utils/utils-node';
+import { prepareOutFolder } from 'src/utils/utils-node';
 import type {
 	CheckConstraint,
 	CockroachEntities,
@@ -17,14 +17,15 @@ import { createDDL, interimToDDL } from '../../dialects/cockroach/ddl';
 import { ddlDiff, ddlDiffDry } from '../../dialects/cockroach/diff';
 import { prepareSnapshot } from '../../dialects/cockroach/serializer';
 import { resolver } from '../prompts';
+import { cockroachSchemaError, cockroachSchemaWarning } from '../views';
 import { writeResult } from './generate-common';
 import type { ExportConfig, GenerateConfig } from './utils';
 
 export const handle = async (config: GenerateConfig) => {
-	const { out: outFolder, schema: schemaPath, casing } = config;
+	const { out: outFolder, filenames } = config;
 
 	const { snapshots } = prepareOutFolder(outFolder);
-	const { ddlCur, ddlPrev, snapshot, custom } = await prepareSnapshot(snapshots, schemaPath, casing);
+	const { ddlCur, ddlPrev, snapshot, custom } = await prepareSnapshot(snapshots, filenames);
 	if (config.custom) {
 		writeResult({
 			snapshot: custom,
@@ -33,7 +34,6 @@ export const handle = async (config: GenerateConfig) => {
 			name: config.name,
 			breakpoints: config.breakpoints,
 			type: 'custom',
-			prefixMode: config.prefix,
 			renames: [],
 			snapshots,
 		});
@@ -63,20 +63,34 @@ export const handle = async (config: GenerateConfig) => {
 		outFolder,
 		name: config.name,
 		breakpoints: config.breakpoints,
-		prefixMode: config.prefix,
 		renames,
 		snapshots,
 	});
 };
 
 export const handleExport = async (config: ExportConfig) => {
-	const filenames = prepareFilenames(config.schema);
-	const res = await prepareFromSchemaFiles(filenames);
+	const res = await prepareFromSchemaFiles(config.filenames);
 
 	// TODO: do we wanna respect entity filter while exporting to sql?
 	// cc: @AleksandrSherman
-	const { schema } = fromDrizzleSchema(res, config.casing, () => true);
-	const { ddl } = interimToDDL(schema);
+	const { schema, errors, warnings } = fromDrizzleSchema(res, () => true);
+
+	if (warnings.length > 0) {
+		console.log(warnings.map((it) => cockroachSchemaWarning(it)).join('\n\n'));
+	}
+
+	if (errors.length > 0) {
+		console.log(errors.map((it) => cockroachSchemaError(it)).join('\n'));
+		process.exit(1);
+	}
+
+	const { ddl, errors: errors2 } = interimToDDL(schema);
+
+	if (errors2.length > 0) {
+		console.log(errors2.map((it) => cockroachSchemaError(it)).join('\n'));
+		process.exit(1);
+	}
+
 	const { sqlStatements } = await ddlDiffDry(createDDL(), ddl, 'default');
 	console.log(sqlStatements.join('\n'));
 };

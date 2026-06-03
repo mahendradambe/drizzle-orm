@@ -16,7 +16,7 @@ import type {
 } from './ddl';
 import { typeFor } from './grammar';
 
-export const imports = ['integer', 'real', 'text', 'numeric', 'blob'] as const;
+export const imports = ['integer', 'real', 'text', 'numeric', 'blob', 'customType'] as const;
 export type Import = typeof imports[number];
 const sqliteImports = new Set([
 	'sqliteTable',
@@ -83,7 +83,7 @@ export const ddlToTypeScript = (
 	for (const it of schema.entities.list()) {
 		if (it.entityType === 'indexes') imports.add(it.isUnique ? 'uniqueIndex' : 'index');
 		if (it.entityType === 'pks' && it.columns.length > 1) imports.add('primaryKey');
-		if (it.entityType === 'uniques' && it.columns.length > 1) imports.add('unique');
+		if (it.entityType === 'uniques') imports.add('unique');
 		if (it.entityType === 'checks') imports.add('check');
 		if (it.entityType === 'columns') columnTypes.add(it.type);
 		if (it.entityType === 'views') imports.add('sqliteView');
@@ -99,7 +99,8 @@ export const ddlToTypeScript = (
 	}
 
 	for (const it of Object.values(viewColumns).flat()) {
-		if (sqliteImports.has(it.type)) imports.add(it.type);
+		const drizzleImport = typeFor(it.type).drizzleImport();
+		if (sqliteImports.has(drizzleImport)) imports.add(drizzleImport);
 	}
 
 	const tableStatements = [] as string[];
@@ -229,11 +230,14 @@ const column = (
 	const grammarType = typeFor(type);
 	if (grammarType) {
 		const drizzleType = grammarType.drizzleImport();
-		const res = grammarType.toTs(defaultValue);
-		const { def, options } = typeof res === 'string' ? { def: res } : res;
+		const res = grammarType.toTs(defaultValue, type);
+		const { def, options, customType } = typeof res === 'string' ? { def: res } : res;
+
 		const defaultStatement = def ? `.default(${def})` : '';
 		const opts = options ? `${JSON.stringify(options)}` : '';
-		return `${withCasing(name, casing)}: ${drizzleType}(${dbColumnName({ name, casing })}${opts})${defaultStatement}`;
+		return `${withCasing(name, casing)}: ${drizzleType}${customType ? `({ dataType: () => '${customType}' })` : ''}(${
+			dbColumnName({ name, casing, withMode: Boolean(opts) })
+		}${opts})${defaultStatement}`;
 	}
 
 	// TODO: ??
@@ -263,7 +267,7 @@ const createTableColumns = (
 ): string => {
 	let statement = '';
 	for (const it of columns) {
-		const isPrimary = pk && pk.columns.length === 1 && pk.columns[0] === it.name;
+		const isPrimary = pk && pk.columns.length === 1 && pk.columns[0] === it.name && pk.table === it.table;
 
 		statement += '\t';
 		statement += column(it.type, it.name, it.default, casing);
@@ -306,7 +310,15 @@ const createViewColumns = (view: View, columns: ViewColumn[], casing: Casing) =>
 
 	for (const it of columns) {
 		const key = withCasing(it.name, casing);
-		statement += `${key}: ${it.type}()`;
+
+		const grammarType = typeFor(it.type);
+		const drizzleType = grammarType.drizzleImport();
+		const res = grammarType.toTs(null, it.type);
+		const { def: _def, customType } = typeof res === 'string' ? { def: res } : res;
+
+		statement += `${key}: ${drizzleType}${
+			drizzleType === 'customType' ? `({ dataType: () => '${!customType ? 'unknown' : customType}' })` : ''
+		}()`;
 		statement += it.notNull ? '.notNull()' : '';
 		statement += ',\n';
 	}
@@ -322,19 +334,10 @@ const createTableIndexes = (
 	let statement = '';
 
 	for (const it of idxs) {
-		let idxKey = it.name.startsWith(tableName) && it.name !== tableName
-			? it.name.slice(tableName.length + 1)
-			: it.name;
-		idxKey = idxKey.endsWith('_index')
-			? idxKey.slice(0, -'_index'.length) + '_idx'
-			: idxKey;
-		idxKey = withCasing(idxKey, casing);
-
 		const columnNames = it.columns.filter((c) => !c.isExpression).map((c) => c.value);
 		const indexGeneratedName = `${tableName}_${columnNames.join('_')}_index`;
 		const escapedIndexName = indexGeneratedName === it.name ? '' : `"${it.name}"`;
 
-		statement += `\t\t${idxKey}: `;
 		statement += it.isUnique ? 'uniqueIndex(' : 'index(';
 		statement += `${escapedIndexName})`;
 		statement += `.on(${
@@ -355,9 +358,6 @@ const createTableUniques = (
 	let statement = '';
 
 	unqs.forEach((it) => {
-		const idxKey = withCasing(it.name, casing);
-
-		statement += `\t\t${idxKey}: `;
 		statement += 'unique(';
 		statement += `"${it.name}")`;
 		statement += `.on(${
@@ -397,7 +397,7 @@ const createTablePK = (pk: PrimaryKey, casing: Casing): string => {
 
 	statement += `${pk.name ? `, name: "${pk.name}"` : ''}}`;
 	statement += ')';
-	statement += `\n`;
+	statement += `,\n`;
 	return statement;
 };
 

@@ -1,6 +1,6 @@
 import { getTableName, is, SQL } from 'drizzle-orm';
 import { Relations } from 'drizzle-orm/_relations';
-import type { AnySQLiteColumn, AnySQLiteTable, UpdateDeleteAction } from 'drizzle-orm/sqlite-core';
+import type { AnySQLiteColumn, AnySQLiteTable } from 'drizzle-orm/sqlite-core';
 import {
 	getTableConfig,
 	getViewConfig,
@@ -10,10 +10,8 @@ import {
 	SQLiteTimestamp,
 	SQLiteView,
 } from 'drizzle-orm/sqlite-core';
-import { assertUnreachable } from 'src/utils';
-import { safeRegister } from 'src/utils/utils-node';
-import type { CasingType } from '../../cli/validations/common';
-import { getColumnCasing, sqlToStr } from '../drizzle';
+import { loadModule } from 'src/utils/utils-node';
+import { sqlToStr } from '../drizzle';
 import type {
 	CheckConstraint,
 	Column,
@@ -26,24 +24,13 @@ import type {
 	UniqueConstraint,
 	View,
 } from './ddl';
-import { Int, nameForForeignKey, nameForPk, nameForUnique, typeFor } from './grammar';
-
-export const transformOnUpdateDelete = (on: UpdateDeleteAction): ForeignKey['onUpdate'] => {
-	if (on === 'no action') return 'NO ACTION';
-	if (on === 'cascade') return 'CASCADE';
-	if (on === 'restrict') return 'RESTRICT';
-	if (on === 'set default') return 'SET DEFAULT';
-	if (on === 'set null') return 'SET NULL';
-
-	assertUnreachable(on);
-};
+import { Int, nameForForeignKey, nameForPk, nameForUnique, transformOnUpdateDelete, typeFor } from './grammar';
 
 export const fromDrizzleSchema = (
 	dTables: AnySQLiteTable[],
 	dViews: SQLiteView[],
-	casing: CasingType | undefined,
 ): InterimSchema => {
-	const dialect = new SQLiteSyncDialect({ casing });
+	const dialect = new SQLiteSyncDialect();
 	const tableConfigs = dTables.map((it) => ({ table: it, config: getTableConfig(it) }));
 	const tables: Table[] = tableConfigs.map((it) => {
 		return {
@@ -54,7 +41,7 @@ export const fromDrizzleSchema = (
 
 	const columns = tableConfigs.map((it) => {
 		return it.config.columns.map((column) => {
-			const name = getColumnCasing(column, casing);
+			const { name } = column;
 			const primaryKey: boolean = column.primary;
 			const generated = column.generated;
 
@@ -78,12 +65,12 @@ export const fromDrizzleSchema = (
 				}
 				: null;
 
-			const defalutValue = defaultFromColumn(column, casing);
+			const defalutValue = defaultFromColumn(column);
 
 			const hasUniqueIndex = Boolean(it.config.indexes.find((item) => {
 				const i = item.config;
 				const column = i.columns.length === 1 ? i.columns[0] : null;
-				return column && !is(column, SQL) && getColumnCasing(column, casing) === name;
+				return column && !is(column, SQL) && column.name === name;
 			}));
 
 			return {
@@ -107,7 +94,7 @@ export const fromDrizzleSchema = (
 
 	const pks = tableConfigs.map((it) => {
 		return it.config.primaryKeys.map((pk) => {
-			const columnNames = pk.columns.map((c) => getColumnCasing(c, casing));
+			const columnNames = pk.columns.map((c) => c.name);
 			return {
 				entityType: 'pks',
 				name: pk.name ?? nameForPk(getTableConfig(pk.table).name),
@@ -127,10 +114,10 @@ export const fromDrizzleSchema = (
 
 			const referenceFT = reference.foreignTable;
 			// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-			const tableTo = getTableName(referenceFT); // TODO: casing?
+			const tableTo = getTableName(referenceFT);
 
-			const columnsFrom = reference.columns.map((it) => getColumnCasing(it, casing));
-			const columnsTo = reference.foreignColumns.map((it) => getColumnCasing(it, casing));
+			const columnsFrom = reference.columns.map((it) => it.name);
+			const columnsTo = reference.foreignColumns.map((it) => it.name);
 
 			const name = fk.isNameExplicit()
 				? fk.getName()
@@ -159,7 +146,7 @@ export const fromDrizzleSchema = (
 					const sql = dialect.sqlToQuery(it, 'indexes').sql;
 					return { value: sql, isExpression: true };
 				}
-				return { value: getColumnCasing(it, casing), isExpression: false };
+				return { value: it.name, isExpression: false };
 			});
 
 			let where: string | undefined;
@@ -182,7 +169,7 @@ export const fromDrizzleSchema = (
 
 	const uniques = tableConfigs.map((it) => {
 		return it.config.uniqueConstraints.map((unique) => {
-			const columnNames = unique.columns.map((c) => getColumnCasing(c, casing));
+			const columnNames = unique.columns.map((c) => c.name);
 			const name = unique.isNameExplicit ? unique.name : nameForUnique(it.config.name, columnNames);
 			return {
 				entityType: 'uniques',
@@ -207,7 +194,19 @@ export const fromDrizzleSchema = (
 		});
 	}).flat();
 
-	const views = dViews.map((it) => {
+	const views = dViews.sort((a, b) => {
+		// see in "./dialects/postgres/drizzle.ts" for more
+		const aConfig = getViewConfig(a);
+		const bConfig = getViewConfig(b);
+
+		// If a's fields include b, a depends on b → b comes first
+		if (aConfig.query?.queryChunks.includes(b)) return 1;
+
+		// If b's fields include a, b depends on a → a comes first
+		if (bConfig.query?.queryChunks.includes(a)) return -1;
+
+		return 0;
+	}).map((it) => {
 		const { name: viewName, isExisting, query } = getViewConfig(it);
 
 		return {
@@ -250,29 +249,26 @@ export const prepareFromSchemaFiles = async (imports: string[]) => {
 	const views: SQLiteView[] = [];
 	const relations: Relations[] = [];
 
-	await safeRegister(async () => {
-		for (let i = 0; i < imports.length; i++) {
-			const it = imports[i];
+	for (let i = 0; i < imports.length; i++) {
+		const it = imports[i];
 
-			const i0: Record<string, unknown> = require(`${it}`);
-			const prepared = fromExports(i0);
+		const i0: Record<string, unknown> = await loadModule(it);
+		const prepared = fromExports(i0);
 
-			tables.push(...prepared.tables);
-			views.push(...prepared.views);
-			relations.push(...prepared.relations);
-		}
-	});
+		tables.push(...prepared.tables);
+		views.push(...prepared.views);
+		relations.push(...prepared.relations);
+	}
 
 	return { tables: Array.from(new Set(tables)), views, relations };
 };
 
 export const defaultFromColumn = (
 	column: AnySQLiteColumn,
-	casing: CasingType | undefined,
 ): Column['default'] => {
 	const def = column.default;
 	if (typeof def === 'undefined') return null; // '', 0, false, etc.
-	if (is(def, SQL)) return sqlToStr(def, casing);
+	if (is(def, SQL)) return sqlToStr(def);
 	if (is(column, SQLiteTimestamp)) return Int.defaultFromDrizzle(def, column.mode);
 	return typeFor(column.getSQLType()).defaultFromDrizzle(def);
 };

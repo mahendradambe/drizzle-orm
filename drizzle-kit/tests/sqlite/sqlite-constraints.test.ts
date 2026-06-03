@@ -1,11 +1,13 @@
-import { sql } from 'drizzle-orm';
+import { desc, isNotNull, isNull, sql } from 'drizzle-orm';
 import {
 	AnySQLiteColumn,
+	check,
 	foreignKey,
 	index,
 	int,
 	integer,
 	primaryKey,
+	snakeCase,
 	sqliteTable,
 	text,
 	unique,
@@ -672,6 +674,41 @@ test('pk #1_0. drop table with pk', async () => {
 	expect(pst).toStrictEqual(st0);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/4549
+// https://github.com/drizzle-team/drizzle-orm/issues/3801
+test('pk #1_1. add column with pk', async () => {
+	const from = {
+		users: sqliteTable('users', {
+			name: text(),
+		}),
+	};
+	const to = {
+		users: sqliteTable('users', {
+			name: text(),
+			id: integer().primaryKey({ autoIncrement: true }),
+		}),
+	};
+
+	const { sqlStatements: st } = await diff(from, to, []);
+
+	await push({ db, to: from });
+	const { sqlStatements: pst } = await push({
+		db,
+		to,
+	});
+	const st0 = [
+		'ALTER TABLE `users` ADD `id` integer;',
+		'PRAGMA foreign_keys=OFF;',
+		`CREATE TABLE \`__new_users\` (\n\t\`name\` text,\n\t\`id\` integer PRIMARY KEY AUTOINCREMENT\n);\n`,
+		'INSERT INTO `__new_users`(`name`) SELECT `name` FROM `users`;',
+		'DROP TABLE `users`;',
+		'ALTER TABLE `__new_users` RENAME TO `users`;',
+		'PRAGMA foreign_keys=ON;',
+	];
+	expect(st).toStrictEqual(st0);
+	expect(pst).toStrictEqual(st0);
+});
+
 test('pk #1_0. drop column with pk', async () => {
 	const from = {
 		users: sqliteTable('users', {
@@ -1259,6 +1296,65 @@ test('pk multistep #3', async () => {
 	expect(pst5).toStrictEqual(e5);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/3103
+// https://github.com/drizzle-team/drizzle-orm/issues/3844
+test('composite pk multistep #1', async () => {
+	const organisations = sqliteTable('organisation', {
+		id: int().primaryKey({ autoIncrement: true }),
+	});
+
+	const users = sqliteTable('user', {
+		id: int().primaryKey({ autoIncrement: true }),
+	});
+
+	const organisationUsers = sqliteTable(
+		'organisationUser',
+		{
+			organisationId: int()
+				.notNull()
+				.references(() => organisations.id),
+			userId: int()
+				.notNull()
+				.references(() => users.id),
+			roles: text({ mode: 'json' }).$type<string[]>().default([]),
+		},
+		(t) => [
+			primaryKey({ columns: [t.userId, t.organisationId] }),
+		],
+	);
+
+	const schema1 = { users, organisations, organisationUsers };
+
+	const { next: n1 } = await diff({}, schema1, []);
+	await push({ db, to: schema1 });
+
+	const { sqlStatements: st2 } = await diff(n1, schema1, []);
+	const { sqlStatements: pst2 } = await push({ db, to: schema1 });
+	expect(st2).toStrictEqual([]);
+	expect(pst2).toStrictEqual([]);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/3844
+// https://github.com/drizzle-team/drizzle-orm/issues/3103
+test('composite pk multistep #2', async () => {
+	const userAsyncTasks = sqliteTable('userAsyncTask', {
+		userId: text('userId').notNull(),
+		identifier: text('identifier').notNull(),
+		type: text('type').notNull(),
+	}, (t) => [
+		primaryKey({ columns: [t.userId, t.type, t.identifier] }),
+	]);
+	const schema = { userAsyncTasks };
+
+	const { next: n1 } = await diff({}, schema, []);
+	await push({ db, to: schema });
+
+	const { sqlStatements: st2 } = await diff(n1, schema, []);
+	const { sqlStatements: pst2 } = await push({ db, to: schema });
+	expect(st2).toStrictEqual([]);
+	expect(pst2).toStrictEqual([]);
+});
+
 test('fk #0', async () => {
 	const users = sqliteTable('users', {
 		id: int().references((): AnySQLiteColumn => users.id2),
@@ -1270,13 +1366,13 @@ test('fk #0', async () => {
 	};
 
 	const { sqlStatements } = await diff({}, to, []);
-	// const { sqlStatements: pst } = await push({ db, to });
+	const { sqlStatements: pst } = await push({ db, to });
 
 	const e = [
 		`CREATE TABLE \`users\` (\n\t\`id\` integer,\n\t\`id2\` integer,\n\tCONSTRAINT \`fk_users_id_users_id2_fk\` FOREIGN KEY (\`id\`) REFERENCES \`users\`(\`id2\`)\n);\n`,
 	];
 	expect(sqlStatements).toStrictEqual(e);
-	// expect(pst).toStrictEqual(e);
+	expect(pst).toStrictEqual(e);
 });
 
 test('fk #1', async () => {
@@ -1670,6 +1766,42 @@ test('fk #15', async () => {
 	expect(pst).toStrictEqual(e);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/3653
+test('fk #16', async () => {
+	const services1 = snakeCase.table('services', {
+		id: integer().primaryKey(),
+	});
+
+	const serviceLinks1 = snakeCase.table('service_links', {
+		id: integer().primaryKey(),
+		serviceId: integer().references(() => services1.id, { onUpdate: 'restrict', onDelete: 'cascade' }),
+	});
+	const schema1 = { services1, serviceLinks1 };
+
+	const { next: n1 } = await diff({}, schema1, []);
+	await push({ db, to: schema1 });
+
+	const services2 = snakeCase.table('services', {
+		id: integer().primaryKey(),
+	});
+
+	const serviceLinks2 = snakeCase.table('service_links', {
+		id: integer().primaryKey(),
+		clientId: integer().references(() => services2.id, { onUpdate: 'restrict', onDelete: 'cascade' }),
+	});
+	const schema2 = { services2, serviceLinks2 };
+
+	const renames = ['service_links.service_id->service_links.client_id'];
+	const { sqlStatements: st2 } = await diff(n1, schema2, renames);
+	const { sqlStatements: pst2 } = await push({ db, to: schema2, renames });
+
+	const expectedSt2 = [
+		'ALTER TABLE `service_links` RENAME COLUMN `service_id` TO `client_id`;',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
 test('fk multistep #1', async () => {
 	const users = sqliteTable('users', {
 		id: int().primaryKey(),
@@ -1781,21 +1913,16 @@ test('index #1', async () => {
 	const table1 = sqliteTable('table1', {
 		col1: integer(),
 		col2: integer(),
-	}, () => [
-		index1,
-		index2,
-		index3,
-		index4,
-		index5,
-		index6,
+	}, (t) => [
+		uniqueIndex('index1').on(t.col1),
+		uniqueIndex('index2').on(t.col1, t.col2),
+		index('index3').on(t.col1),
+		index('index4').on(t.col1, t.col2),
+		index('index5').on(sql`${t.col1} asc`),
+		index('index6').on(sql`${t.col1} asc`, sql`${t.col2} desc`),
+		uniqueIndex('index7').on(t.col1).where(isNotNull(t.col1)),
+		index('index8').on(t.col1).where(isNotNull(t.col1)),
 	]);
-
-	const index1 = uniqueIndex('index1').on(table1.col1);
-	const index2 = uniqueIndex('index2').on(table1.col1, table1.col2);
-	const index3 = index('index3').on(table1.col1);
-	const index4 = index('index4').on(table1.col1, table1.col2);
-	const index5 = index('index5').on(sql`${table1.col1} asc`);
-	const index6 = index('index6').on(sql`${table1.col1} asc`, sql`${table1.col2} desc`);
 
 	const schema1 = { table1 };
 
@@ -1813,7 +1940,97 @@ test('index #1', async () => {
 		'CREATE INDEX `index4` ON `table1` (`col1`,`col2`);',
 		'CREATE INDEX `index5` ON `table1` ("col1" asc);',
 		'CREATE INDEX `index6` ON `table1` ("col1" asc,"col2" desc);',
+		'CREATE UNIQUE INDEX `index7` ON `table1` (`col1`) WHERE ("table1"."col1" is not null);',
+		'CREATE INDEX `index8` ON `table1` (`col1`) WHERE ("table1"."col1" is not null);',
 	];
+	expect(st1).toStrictEqual(expectedSt1);
+	expect(pst1).toStrictEqual(expectedSt1);
+});
+
+test('issue 4574', async () => {
+	const demo_with_check = sqliteTable(
+		'demo_with_check',
+		{
+			id: integer().primaryKey({ autoIncrement: true }),
+			test: integer(),
+		},
+		(table) => [check('test_positive', sql`0 < ${table.test}`)],
+	);
+
+	const demo_without_check = sqliteTable('demo_without_check', {
+		id: integer().primaryKey({ autoIncrement: true }),
+		unique: text().unique().notNull(),
+	});
+
+	const schema1 = { demo_with_check, demo_without_check };
+
+	const { sqlStatements: st1, next: n1 } = await diff({}, schema1, []);
+	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
+
+	const expectedSt1 = [
+		`CREATE TABLE \`demo_with_check\` (
+\t\`id\` integer PRIMARY KEY AUTOINCREMENT,
+\t\`test\` integer,
+\tCONSTRAINT \"test_positive\" CHECK(0 < \"test\")
+);\n`,
+		`CREATE TABLE \`demo_without_check\` (
+\t\`id\` integer PRIMARY KEY AUTOINCREMENT,
+\t\`unique\` text NOT NULL UNIQUE
+);\n`,
+	];
+	expect(st1).toStrictEqual(expectedSt1);
+	expect(pst1).toStrictEqual(expectedSt1);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/4704
+test('issue No4704. Composite index with sort outputs', async () => {
+	const schema1 = {
+		table: sqliteTable(
+			'table',
+			{ col1: text(), col2: text(), col3: text() },
+			(table) => [
+				index('table_composite_idx').on(
+					table.col1,
+					table.col2,
+					desc(table.col3), // Attempting to sort by col3 DESC
+				),
+			],
+		),
+	};
+
+	const { sqlStatements: st1, next: n1 } = await diff({}, schema1, []);
+	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
+	const expectedSt1 = [
+		'CREATE TABLE `table` (\n\t`col1` text,\n\t`col2` text,\n\t`col3` text\n);\n',
+		'CREATE INDEX `table_composite_idx` ON `table` (`col1`,`col2`,"col3" desc);', // drizzle-orm parses as "". Should work, but still...
+	];
+	expect(st1).toStrictEqual(expectedSt1);
+	expect(pst1).toStrictEqual(expectedSt1);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/4688
+test('issue No4688. subsequent push with where part of partial index', async () => {
+	const schema1 = {
+		table: sqliteTable(
+			'table',
+			{
+				id: int().primaryKey(),
+				type: text(),
+				isDeleted: int({ mode: 'boolean' }),
+			},
+			(table) => [
+				index('table_composite_idx').on(table.id, table.type).where(isNull(table.isDeleted)),
+			],
+		),
+	};
+
+	const { sqlStatements: st1, next: n1 } = await diff({}, schema1, []);
+	const { sqlStatements: pst1 } = await push({ db, to: schema1 }); // subsequent push inside
+	const expectedSt1 = [
+		'CREATE TABLE `table` (\n\t`id` integer PRIMARY KEY,\n\t`type` text,\n\t`isDeleted` integer\n);\n',
+		'CREATE INDEX `table_composite_idx` ON `table` (`id`,`type`) WHERE ("table"."isDeleted" is null);', // drizzle-orm parses as "". Should work, but still...
+	];
+
 	expect(st1).toStrictEqual(expectedSt1);
 	expect(pst1).toStrictEqual(expectedSt1);
 });

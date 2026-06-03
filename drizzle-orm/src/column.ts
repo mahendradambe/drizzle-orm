@@ -6,7 +6,7 @@ import type {
 } from './column-builder.ts';
 import { OriginalColumn } from './column-common.ts';
 import { entityKind } from './entity.ts';
-import type { DriverValueMapper, SQL, SQLWrapper } from './sql/sql.ts';
+import type { DriverValueDecoderFn, DriverValueEncoderFn, DriverValueMapper, SQL, SQLWrapper } from './sql/sql.ts';
 import type { Table } from './table.ts';
 import type { Update } from './utils.ts';
 
@@ -24,12 +24,17 @@ export interface ColumnBaseConfig<TDataType extends ColumnType> {
 	data: unknown;
 	driverParam: unknown;
 	enumValues: string[] | undefined;
+	generated: unknown;
+	identity: undefined | 'always' | 'byDefault';
 }
 
+const noop: DriverValueDecoderFn<any, any> | DriverValueEncoderFn<any, any> = (v) => v;
+noop.isNoop = true;
+
 export interface Column<
-	T extends ColumnBaseConfig<ColumnType> = ColumnBaseConfig<ColumnType>,
+	out T extends ColumnBaseConfig<ColumnType> = ColumnBaseConfig<ColumnType>,
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	TRuntimeConfig extends object = object,
+	out TRuntimeConfig extends object = object,
 > extends DriverValueMapper<T['data'], T['driverParam']>, SQLWrapper {
 	// SQLWrapper runtime implementation is defined in 'sql/sql.ts'
 	// `as` runtime implementation is defined in 'alias.ts'
@@ -42,14 +47,15 @@ export interface Column<
 	See `GetColumnData` for example usage of inferring.
 */
 export abstract class Column<
-	T extends ColumnBaseConfig<ColumnType> = ColumnBaseConfig<ColumnType>,
-	TRuntimeConfig extends object = object,
+	out T extends ColumnBaseConfig<ColumnType> = ColumnBaseConfig<ColumnType>,
+	out TRuntimeConfig extends object = object,
 > implements DriverValueMapper<T['data'], T['driverParam']>, SQLWrapper {
 	static readonly [entityKind]: string = 'Column';
 
-	declare readonly _: T & {
-		identity: undefined | 'always' | 'byDefault';
-	};
+	declare readonly _: T;
+
+	/** @internal */
+	readonly codec?: string;
 
 	readonly name: string;
 	readonly keyAsName: boolean;
@@ -110,15 +116,17 @@ export abstract class Column<
 
 	abstract getSQLType(): string;
 
-	mapFromDriverValue(value: unknown): unknown {
-		return value;
+	mapFromDriverValue = noop;
+
+	mapToDriverValue = noop;
+
+	// TODO: Revisit
+	/** @internal */
+	postBuild() {
+		return this;
 	}
 
-	mapToDriverValue(value: unknown): unknown {
-		return value;
-	}
-
-	// ** @internal */
+	/** @internal */
 	shouldDisableInsert(): boolean {
 		return this.config.generated !== undefined && this.config.generated.type !== 'byDefault';
 	}

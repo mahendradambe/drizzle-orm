@@ -1,4 +1,3 @@
-import type { ColumnBaseConfig } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import type { PgTable } from '~/pg-core/table.ts';
 import { getColumnNameAndConfig } from '~/utils.ts';
@@ -29,23 +28,19 @@ export class PgHalfVectorBuilder extends PgColumnBuilder<
 	}
 }
 
-export class PgHalfVector<T extends ColumnBaseConfig<'array halfvector'>> extends PgColumn<T> {
+export class PgHalfVector extends PgColumn<'array halfvector'> {
 	static override readonly [entityKind]: string = 'PgHalfVector';
+
+	/** @internal */
+	override readonly codec = 'halfvec';
 
 	getSQLType(): string {
 		return `halfvec(${this.length})`;
 	}
 
-	override mapToDriverValue(value: unknown): unknown {
+	override mapToDriverValue = (value: unknown): unknown => {
 		return JSON.stringify(value);
-	}
-
-	override mapFromDriverValue(value: string): unknown {
-		return value
-			.slice(1, -1)
-			.split(',')
-			.map((v) => Number.parseFloat(v));
-	}
+	};
 }
 
 export interface PgHalfVectorConfig {

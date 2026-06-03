@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import Docker from 'dockerode';
-import { DrizzleError, sql, TransactionRollbackError } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/mysql-core';
+import { defineRelations, DrizzleError, eq, sql, TransactionRollbackError } from 'drizzle-orm';
+import { alias, int, mysqlTable, snakeCase, time } from 'drizzle-orm/mysql-core';
 import { drizzle, type MySql2Database } from 'drizzle-orm/mysql2';
 import getPort from 'get-port';
 import * as mysql from 'mysql2/promise';
@@ -31,14 +31,14 @@ declare module 'vitest' {
 	export interface TestContext {
 		docker: Docker;
 		mysqlContainer: Docker.Container;
-		mysqlDbV2: MySql2Database<never, typeof relations>;
+		mysqlDbV2: MySql2Database<typeof relations>;
 		mysqlClient: mysql.Connection;
 	}
 }
 
 let globalDocker: Docker;
 let mysqlContainer: Docker.Container;
-let db: MySql2Database<never, typeof relations>;
+let db: MySql2Database<typeof relations>;
 let client: mysql.Connection;
 
 async function createDockerDB(): Promise<string> {
@@ -93,7 +93,7 @@ beforeAll(async () => {
 		await mysqlContainer?.stop().catch(console.error);
 		throw lastError;
 	}
-	db = drizzle({ client, relations, logger: ENABLE_LOGGING, mode: 'default', casing: 'snake_case' });
+	db = drizzle({ client, relations, logger: ENABLE_LOGGING });
 });
 
 afterAll(async () => {
@@ -12748,10 +12748,71 @@ test('[Find Many .through] Through with uneven relation column count - reverse',
 	]);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/4539
+test('[Find many] time column parsing', async () => {
+	const studios = snakeCase.table('studios', {
+		id: int().primaryKey(),
+		openTime: time(),
+	});
+
+	const notices = snakeCase.table('notices', {
+		studioId: int().references(() => studios.id),
+	});
+	const relations = defineRelations({ studios, notices }, (r) => ({
+		studio: {
+			notices: r.many.notices({
+				from: r.studios.id,
+				to: r.notices.studioId,
+			}),
+		},
+		notices: {
+			studio: r.one.studios({
+				from: r.notices.studioId,
+				to: r.studios.id,
+			}),
+		},
+	}));
+	const db = drizzle({ client, relations });
+	await db.execute(sql`DROP TABLE IF EXISTS \`notices\`;`);
+	await db.execute(sql`DROP TABLE IF EXISTS \`studios\`;`);
+	await db.execute(sql`
+	CREATE TABLE \`notices\` (
+        \`studio_id\` int
+		);
+	`);
+	await db.execute(sql`
+	CREATE TABLE \`studios\` (
+        \`id\` int PRIMARY KEY,
+        \`open_time\` time
+		);
+	`);
+	await db.execute(
+		sql`ALTER TABLE \`notices\` ADD CONSTRAINT \`notices_studios_id_studio_id_fkey\` FOREIGN KEY (\`studio_id\`) REFERENCES \`studios\`(\`id\`);`,
+	);
+
+	await db.insert(studios).values({ id: 1, openTime: '18:48:26' });
+	await db.insert(notices).values({ studioId: 1 });
+
+	const result1 = await db.query.notices.findMany({
+		with: {
+			studio: true,
+		},
+	});
+	expect(result1[0]?.studio?.openTime).toEqual('18:48:26');
+
+	const result2 = await db
+		.select()
+		.from(notices)
+		.leftJoin(studios, eq(notices.studioId, studios.id));
+	expect(result2[0]?.studios?.openTime).toEqual('18:48:26');
+});
+
 test('alltypes', async () => {
 	await db.execute(sql`
 		CREATE TABLE \`all_types\` (
 				\`serial\` serial AUTO_INCREMENT,
+				\`blob\` blob,
+				\`blob_str\` blob,
 				\`bigint53\` bigint,
 				\`bigint64\` bigint,
 				\`bigint_string\` bigint,
@@ -12791,6 +12852,8 @@ test('alltypes', async () => {
 
 	await db.insert(allTypesTable).values({
 		serial: 1,
+		blob: Buffer.from('BYTES'),
+		blobStr: 'BYTES',
 		bigint53: 9007199254740991,
 		bigint64: 5044565289845416380n,
 		bigintString: '5044565289845416380',
@@ -12842,6 +12905,8 @@ test('alltypes', async () => {
 	const expectedRes = [
 		{
 			serial: 1,
+			blob: Buffer.from('BYTES'),
+			blobStr: 'BYTES',
 			bigint53: 9007199254740991,
 			bigint64: 5044565289845416380n,
 			bigintString: '5044565289845416380',

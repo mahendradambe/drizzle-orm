@@ -1,6 +1,5 @@
 import { is } from 'drizzle-orm';
 import {
-	getViewConfig,
 	isPgEnum,
 	isPgMaterializedView,
 	isPgSequence,
@@ -30,8 +29,15 @@ import {
 	PgTable as PgTableOld,
 	PgView as PgViewOld,
 } from 'orm044/pg-core';
-import { CasingType } from 'src/cli/validations/common';
-import { createDDL, fromEntities, interimToDDL, PostgresDDL, SchemaError } from 'src/dialects/postgres/ddl';
+import { configMigrations } from 'src/cli/validations/common';
+import {
+	createDDL,
+	fromEntities,
+	interimToDDL,
+	PostgresDDL,
+	postgresToRelationsPull,
+	SchemaError,
+} from 'src/dialects/postgres/ddl';
 import { ddlDiff, ddlDiffDry } from 'src/dialects/postgres/diff';
 import {
 	defaultFromColumn,
@@ -45,6 +51,8 @@ import { PGlite } from '@electric-sql/pglite';
 // @ts-ignore
 import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 // @ts-ignore
+import { citext } from '@electric-sql/pglite/contrib/citext';
+// @ts-ignore
 import { vector } from '@electric-sql/pglite/vector';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import pg from 'pg';
@@ -57,18 +65,21 @@ import { fromDatabaseForDrizzle } from 'src/dialects/postgres/introspect';
 import { ddlToTypeScript } from 'src/dialects/postgres/typescript';
 import { DB } from 'src/utils';
 import 'zx/globals';
-import { EntitiesFilter, EntitiesFilterConfig } from 'src/cli/validations/cli';
+import { relationsToTypeScript } from 'src/cli/commands/pull-common';
+import { EntitiesFilter, EntitiesFilterConfig } from 'src/cli/validations/common';
 import { extractPostgresExisting } from 'src/dialects/drizzle';
-import { getReasonsFromStatements } from 'src/dialects/postgres/commutativity';
+import { postgresCommutativity } from 'src/dialects/postgres/commutativity';
 import { PostgresSnapshot } from 'src/dialects/postgres/snapshot';
 import { upToV8 } from 'src/dialects/postgres/versions';
 import { prepareEntityFilter } from 'src/dialects/pull-utils';
 import { diff as legacyDiff } from 'src/legacy/postgres-v7/pgDiff';
 import { serializePg } from 'src/legacy/postgres-v7/serializer';
+import { loadModule } from 'src/utils/utils-node';
 import { tsc } from 'tests/utils';
 import { expect } from 'vitest';
 
-mkdirSync(`tests/postgres/tmp/`, { recursive: true });
+const tmpDir = 'tests/postgres/tmp';
+mkdirSync(tmpDir, { recursive: true });
 
 const { Client } = pg;
 
@@ -108,7 +119,6 @@ class MockError extends Error {
 
 export const drizzleToDDL = (
 	schema: PostgresSchema,
-	casing?: CasingType | undefined,
 	filtersConfig: EntitiesFilterConfig = {
 		entities: undefined,
 		extensions: undefined,
@@ -134,7 +144,7 @@ export const drizzleToDDL = (
 		schema: res,
 		errors,
 		warnings,
-	} = fromDrizzleSchema(grouped, casing, filter);
+	} = fromDrizzleSchema(grouped, filter);
 
 	if (errors.length > 0) {
 		throw new Error();
@@ -148,14 +158,13 @@ export const diff = async (
 	left: PostgresSchema | PostgresDDL,
 	right: PostgresSchema | PostgresDDL,
 	renamesArr: string[],
-	casing?: CasingType | undefined,
 ) => {
 	const { ddl: ddl1, errors: err1 } = 'entities' in left && '_' in left
 		? { ddl: left as PostgresDDL, errors: [] }
-		: drizzleToDDL(left, casing);
+		: drizzleToDDL(left);
 	const { ddl: ddl2, errors: err2 } = 'entities' in right && '_' in right
 		? { ddl: right as PostgresDDL, errors: [] }
-		: drizzleToDDL(right, casing);
+		: drizzleToDDL(right);
 
 	if (err1.length > 0 || err2.length > 0) {
 		throw new MockError([...err1, ...err2]);
@@ -192,18 +201,22 @@ export const push = async (config: {
 	renames?: string[];
 	schemas?: string[];
 	tables?: string[];
-	casing?: CasingType;
 	log?: 'statements' | 'none';
 	entities?: EntitiesFilter;
 	ignoreSubsequent?: boolean;
 	explain?: true;
+	migrationsConfig?: {
+		schema?: string;
+		table?: string;
+	};
 }) => {
 	const { db, to } = config;
 
 	const log = config.log ?? 'none';
-	const casing = config.casing;
 	const schemas = config.schemas ?? [];
 	const tables = config.tables ?? [];
+
+	const migrations = configMigrations.parse(config.migrationsConfig);
 
 	const filterConfig = {
 		tables,
@@ -214,10 +227,16 @@ export const push = async (config: {
 
 	const { ddl: ddl2, errors: err2, existing } = 'entities' in to && '_' in to
 		? { ddl: to as PostgresDDL, errors: [], existing: [] }
-		: drizzleToDDL(to, casing, filterConfig);
+		: drizzleToDDL(to, filterConfig);
 
 	const filter = prepareEntityFilter('postgresql', filterConfig, existing);
-	const { schema } = await introspect(db, filter, new EmptyProgressView());
+	const { schema } = await introspect(
+		db,
+		filter,
+		new EmptyProgressView(),
+		() => {},
+		migrations,
+	);
 
 	const { ddl: ddl1, errors: err3 } = interimToDDL(schema);
 
@@ -276,6 +295,8 @@ export const push = async (config: {
 				db,
 				filter,
 				new EmptyProgressView(),
+				() => {},
+				migrations,
 			);
 			const { ddl: ddl1, errors: err3 } = interimToDDL(schema);
 
@@ -315,9 +336,8 @@ export const diffIntrospect = async (
 	testName: string,
 	schemas: string[] = ['public'],
 	entities?: EntitiesFilter,
-	casing?: CasingType | undefined,
 ) => {
-	const { ddl: initDDL } = drizzleToDDL(initSchema, casing);
+	const { ddl: initDDL } = drizzleToDDL(initSchema);
 	const { sqlStatements: init } = await ddlDiffDry(createDDL(), initDDL, 'default');
 	for (const st of init) await db.query(st);
 
@@ -328,15 +348,31 @@ export const diffIntrospect = async (
 		extensions: [],
 	}, []);
 	// introspect to schema
-	const schema = await fromDatabaseForDrizzle(db, filter);
+	const schema = await fromDatabaseForDrizzle(db, filter, () => true, {
+		schema: 'drizzle',
+		table: '__drizzle_migrations',
+	});
 	const { ddl: ddl1, errors: e1 } = interimToDDL(schema);
 
-	const filePath = `tests/postgres/tmp/${testName}.ts`;
-	const file = ddlToTypeScript(ddl1, schema.viewColumns, 'camel', 'pg');
+	// schema
+	const filePath = `${tmpDir}/${testName}.ts`;
+	const file = ddlToTypeScript(ddl1, schema.viewColumns, 'camel');
 	writeFileSync(filePath, file.file);
-
 	await tsc(file.file).catch((e) => {
 		throw new Error(`tsc error in file ${filePath}`, { cause: e });
+	});
+
+	// relations
+	const relationsPath = `${tmpDir}/${testName}-relations.ts`;
+	const schemaAbsolutePath = path.resolve(tmpDir, testName);
+	const relationsForTsc = relationsToTypeScript(
+		postgresToRelationsPull(ddl1),
+		'camel',
+		schemaAbsolutePath,
+	);
+	writeFileSync(relationsPath, relationsForTsc.file);
+	await tsc(relationsForTsc.file).catch((e) => {
+		throw new Error(`tsc error in file ${relationsPath}`, { cause: e });
 	});
 
 	// generate snapshot from ts file
@@ -348,26 +384,52 @@ export const diffIntrospect = async (
 		schema: schema2,
 		errors: e2,
 		warnings,
-	} = fromDrizzleSchema(response, casing, () => true);
+	} = fromDrizzleSchema(response, () => true);
 	const { ddl: ddl2, errors: e3 } = interimToDDL(schema2);
 	// TODO: handle errors
 
 	const {
-		sqlStatements: afterFileSqlStatements,
-		statements: afterFileStatements,
-		groupedStatements,
+		sqlStatements: pushAfterFileSqlStatements,
+		statements: pushAfterFileStatements,
+		groupedStatements: pushAfterFileGroupedStatements,
 	} = await ddlDiffDry(ddl1, ddl2, 'push');
 
-	if (afterFileSqlStatements.length > 0) {
-		console.log(explain('mysql', groupedStatements, true, []));
+	if (pushAfterFileSqlStatements.length > 0) {
+		console.log(chalk.bgRed('After push: ') + '\n' + explain('postgres', pushAfterFileGroupedStatements, true, []));
 	}
 
-	rmSync(`tests/postgres/tmp/${testName}.ts`);
+	const {
+		sqlStatements: generateAfterFileSqlStatements,
+		statements: generateAfterFileStatements,
+		groupedStatements: generateAfterFileGroupedStatements,
+	} = await ddlDiffDry(ddl1, ddl2, 'default');
+
+	if (generateAfterFileSqlStatements.length > 0) {
+		console.log(
+			chalk.bgRed('After generate: ') + '\n' + explain('postgres', generateAfterFileGroupedStatements, true, []),
+		);
+	}
+
+	let relationsError: Error | null = null;
+	try {
+		await loadModule(path.relative(process.cwd(), relationsPath));
+		rmSync(relationsPath);
+	} catch (error: any) {
+		relationsError = error;
+	}
+
+	if ([...generateAfterFileSqlStatements, ...pushAfterFileSqlStatements].length === 0) {
+		rmSync(`tests/postgres/tmp/${testName}.ts`);
+	}
 
 	return {
-		sqlStatements: afterFileSqlStatements,
-		statements: afterFileStatements,
+		pushSqlStatements: pushAfterFileSqlStatements,
+		pushStatements: pushAfterFileStatements,
+		generateSqlStatements: generateAfterFileSqlStatements,
+		generateStatements: generateAfterFileStatements,
 		ddlAfterPull: ddl1,
+		schema2,
+		relationsError,
 	};
 };
 
@@ -449,10 +511,14 @@ export const diffDefault = async <T extends PgColumnBuilder>(
 		db,
 		filter ?? (() => true),
 		schemasFilter ? (it: string) => schemasFilter.some((x) => x === it) : ((_) => true),
+		{
+			schema: 'drizzle',
+			table: '__drizzle_migrations',
+		},
 	);
 	const { ddl: ddl1, errors: e1 } = interimToDDL(schema);
 
-	const file = ddlToTypeScript(ddl1, schema.viewColumns, 'camel', 'pg');
+	const file = ddlToTypeScript(ddl1, schema.viewColumns, 'camel');
 	const path = `tests/postgres/tmp/temp-${hash(String(Math.random()))}.ts`;
 
 	if (existsSync(path)) rmSync(path);
@@ -460,7 +526,7 @@ export const diffDefault = async <T extends PgColumnBuilder>(
 	await tsc(file.file);
 
 	const response = await prepareFromSchemaFiles([path]);
-	const { schema: sch } = fromDrizzleSchema(response, 'camelCase', () => true);
+	const { schema: sch } = fromDrizzleSchema(response, () => true);
 	const { ddl: ddl2, errors: e3 } = interimToDDL(sch);
 
 	const { sqlStatements: afterFileSqlStatements } = await ddlDiffDry(ddl1, ddl2, 'push');
@@ -564,9 +630,14 @@ export type TestDatabase<TClient = any> = {
 	clear: () => Promise<void>;
 };
 
-const client = new PGlite({ extensions: { vector, pg_trgm } });
+const client = new PGlite({ extensions: { citext, vector, pg_trgm } });
 
 export const prepareTestDatabase = async (tx: boolean = true): Promise<TestDatabase<PGlite>> => {
+	const envPgVersion = process.env.PG_VERSION;
+	if (envPgVersion && ['18', '17', '16'].includes(envPgVersion)) {
+		return await preparePgVersionTestDatabase(tx, envPgVersion);
+	}
+
 	await client.query(`CREATE ACCESS METHOD drizzle_heap TYPE TABLE HANDLER heap_tableam_handler;`);
 	await client.query(`CREATE EXTENSION vector;`);
 	await client.query(`CREATE EXTENSION pg_trgm;`);
@@ -621,6 +692,98 @@ export const prepareTestDatabase = async (tx: boolean = true): Promise<TestDatab
 	return { db, close: async () => {}, clear, client };
 };
 
+export const preparePgVersionTestDatabase = async (
+	tx: boolean = true,
+	version: string = '18',
+): Promise<TestDatabase<any>> => {
+	let envURL: string | undefined;
+	if (version === '16') {
+		envURL = process.env.PG16_URL;
+		if (!envURL) throw new Error('PG16_URL is not set');
+	} else if (version === '17') {
+		envURL = process.env.PG17_URL;
+		if (!envURL) throw new Error('PG17_URL is not set');
+	} else if (version === '18') {
+		envURL = process.env.PG18_URL;
+		if (!envURL) throw new Error('PG18_URL is not set');
+	}
+
+	if (!envURL) {
+		throw new Error('One of PG18_URL, PG17_URL or PG16_URL is not set');
+	}
+
+	const parsed = new URL(envURL);
+	parsed.pathname = '/postgres';
+
+	const adminUrl = parsed.toString();
+	const admin = new Client({ connectionString: adminUrl });
+	await admin.connect();
+	await admin!.query(`DROP DATABASE IF EXISTS drizzle;`);
+	await admin!.query(`CREATE DATABASE drizzle;`);
+	await admin.end();
+
+	// envURL should have drizzle set as database
+	const pgClient = new Client({ connectionString: envURL });
+	await pgClient.connect();
+	await pgClient!.query(`DROP ACCESS METHOD IF EXISTS drizzle_heap;`);
+	await pgClient!.query(`CREATE ACCESS METHOD drizzle_heap TYPE TABLE HANDLER heap_tableam_handler;`);
+	await pgClient!.query(`CREATE EXTENSION IF NOT EXISTS vector;`);
+	await pgClient!.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
+	if (tx) {
+		await pgClient!.query('BEGIN').catch();
+		await pgClient!.query('SAVEPOINT drizzle');
+	}
+
+	const clear = async () => {
+		if (tx) {
+			await pgClient.query('ROLLBACK TO SAVEPOINT drizzle');
+			await pgClient.query('BEGIN');
+			await pgClient.query('SAVEPOINT drizzle');
+			return;
+		}
+
+		const namespaces = await pgClient.query<{ name: string }>('select oid, nspname as name from pg_namespace').then((
+			res,
+		) => res.rows.filter((r) => !isSystemNamespace(r.name)));
+
+		const roles = await pgClient.query<{ rolname: string }>(
+			`SELECT rolname, rolinherit, rolcreatedb, rolcreaterole FROM pg_roles;`,
+		).then((it) => it.rows.filter((it) => !isSystemRole(it.rolname)));
+
+		for (const namespace of namespaces) {
+			await pgClient.query(`DROP SCHEMA "${namespace.name}" cascade`);
+		}
+
+		await pgClient.query('CREATE SCHEMA public;');
+
+		for (const role of roles) {
+			await pgClient.query(`DROP ROLE "${role.rolname}"`);
+		}
+
+		await pgClient.query(`CREATE EXTENSION IF NOT EXISTS vector;`);
+		await pgClient.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
+	};
+
+	const close = async () => {
+		await pgClient.end().catch(console.error);
+	};
+
+	const db: TestDatabase['db'] = {
+		query: async (sql, params) => {
+			return pgClient.query(sql, params).then((it) => it.rows as any[]).catch((e: Error) => {
+				const error = new Error(`query error: ${sql}\n\n${e.message}`);
+				throw error;
+			});
+		},
+		batch: async (sqls) => {
+			for (const sql of sqls) {
+				await pgClient.query(sql);
+			}
+		},
+	};
+	return { db, close, clear, client };
+};
+
 export const preparePostgisTestDatabase = async (tx: boolean = true): Promise<TestDatabase<any>> => {
 	const envURL = process.env.POSTGIS_URL;
 	if (!envURL) {
@@ -635,8 +798,9 @@ export const preparePostgisTestDatabase = async (tx: boolean = true): Promise<Te
 	await admin.connect();
 	await admin!.query(`DROP DATABASE IF EXISTS drizzle;`);
 	await admin!.query(`CREATE DATABASE drizzle;`);
-	admin.end();
+	await admin.end();
 
+	// envURL should have drizzle set as database
 	const pgClient = new Client({ connectionString: envURL });
 	await pgClient.connect();
 	await pgClient!.query(`DROP ACCESS METHOD IF EXISTS drizzle_heap;`);
@@ -699,7 +863,7 @@ export const preparePostgisTestDatabase = async (tx: boolean = true): Promise<Te
 type SchemaShape = {
 	id: string;
 	prevId?: string;
-	schema: Record<string, PgTable>;
+	schema: PostgresSchema;
 };
 
 export async function conflictsFromSchema(
@@ -709,32 +873,19 @@ export async function conflictsFromSchema(
 		child2: SchemaShape;
 	},
 ) {
-	const parentInterim = fromDrizzleSchema(
-		{
-			tables: Object.values(parent.schema),
-			schemas: [],
-			enums: [],
-			sequences: [],
-			roles: [],
-			policies: [],
-			views: [],
-			matViews: [],
-		},
-		undefined,
-		() => true,
-	);
+	const { ddl: parentDDL } = drizzleToDDL(parent.schema);
 
 	const parentSnapshot = {
 		version: '8',
 		dialect: 'postgres',
 		id: parent.id,
 		prevIds: parent.prevId ? [parent.prevId] : [],
-		ddl: interimToDDL(parentInterim.schema).ddl.entities.list(),
+		ddl: parentDDL.entities.list(),
 		renames: [],
 	} satisfies PostgresSnapshot;
 
 	const { statements: st1 } = await diff(parent.schema, child1.schema, []);
 	const { statements: st2 } = await diff(parent.schema, child2.schema, []);
 
-	return await getReasonsFromStatements(st1, st2, parentSnapshot);
+	return await postgresCommutativity.getReasonsFromStatements(st1, st2, parentSnapshot);
 }

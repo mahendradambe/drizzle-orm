@@ -83,6 +83,7 @@ import {
 	varchar,
 	year,
 } from 'drizzle-orm/mysql-core';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import getPort from 'get-port';
 import Keyv from 'keyv';
 import { v4 as uuid } from 'uuid';
@@ -188,7 +189,7 @@ const usersTable = mysqlTable('userstest', {
 const users2Table = mysqlTable('users2', {
 	id: serial('id').primaryKey(),
 	name: text('name').notNull(),
-	cityId: int('city_id').references(() => citiesTable.id),
+	cityId: bigint('city_id', { unsigned: true, mode: 'number' }).references(() => citiesTable.id),
 });
 
 const citiesTable = mysqlTable('cities', {
@@ -219,7 +220,7 @@ const datesTable = mysqlTable('datestable', {
 const coursesTable = mysqlTable('courses', {
 	id: serial('id').primaryKey(),
 	name: text('name').notNull(),
-	categoryId: int('category_id').references(() => courseCategoriesTable.id),
+	categoryId: bigint('category_id', { unsigned: true, mode: 'number' }).references(() => courseCategoriesTable.id),
 });
 
 const courseCategoriesTable = mysqlTable('course_categories', {
@@ -279,7 +280,7 @@ const citiesMySchemaTable = mySchema.table('cities', {
 
 const ENABLE_LOGGING = false;
 
-let db: BunMySqlDatabase<never, typeof relations> & { $client: SQL };
+let db: BunMySqlDatabase<typeof relations> & { $client: SQL };
 let dbGlobalCached: BunMySqlDatabase & { $client: SQL };
 let cachedDb: BunMySqlDatabase & { $client: SQL };
 let client: SQL;
@@ -374,19 +375,19 @@ describe('common', () => {
 
 		await db.execute(
 			sql`
-				create table users2 (
+				create table cities (
 					id serial primary key,
-					name text not null,
-					city_id int references cities(id)
+					name text not null
 				)
 			`,
 		);
 
 		await db.execute(
 			sql`
-				create table cities (
+				create table users2 (
 					id serial primary key,
-					name text not null
+					name text not null,
+					city_id bigint unsigned references cities(id)
 				)
 			`,
 		);
@@ -417,7 +418,7 @@ describe('common', () => {
 				create table \`mySchema\`.\`users2\` (
 					\`id\` serial primary key,
 					\`name\` text not null,
-					\`city_id\` int references \`mySchema\`.\`cities\`(\`id\`)
+					\`city_id\` bigint unsigned references \`mySchema\`.\`cities\`(\`id\`)
 				)
 			`,
 		);
@@ -439,7 +440,7 @@ describe('common', () => {
 		`);
 	});
 
-	async function setupReturningFunctionsTest(db: MySqlDatabase<any, any, any, any, any>) {
+	async function setupReturningFunctionsTest(db: MySqlDatabase<any, any>) {
 		await db.execute(sql`drop table if exists \`users_default_fn\``);
 		await db.execute(
 			sql`
@@ -451,24 +452,25 @@ describe('common', () => {
 		);
 	}
 
-	async function setupSetOperationTest(db: MySqlDatabase<any, any, any, any, any>) {
+	async function setupSetOperationTest(db: MySqlDatabase<any, any>) {
 		await db.execute(sql`drop table if exists \`users2\``);
 		await db.execute(sql`drop table if exists \`cities\``);
-		await db.execute(
-			sql`
-				create table \`users2\` (
-					\`id\` serial primary key,
-					\`name\` text not null,
-					\`city_id\` int references \`cities\`(\`id\`)
-				)
-			`,
-		);
 
 		await db.execute(
 			sql`
 				create table \`cities\` (
 					\`id\` serial primary key,
 					\`name\` text not null
+				)
+			`,
+		);
+
+		await db.execute(
+			sql`
+				create table \`users2\` (
+					\`id\` serial primary key,
+					\`name\` text not null,
+					\`city_id\` bigint unsigned references \`cities\`(\`id\`)
 				)
 			`,
 		);
@@ -491,7 +493,7 @@ describe('common', () => {
 		]);
 	}
 
-	async function setupAggregateFunctionsTest(db: MySqlDatabase<any, any, any, any, any>) {
+	async function setupAggregateFunctionsTest(db: MySqlDatabase<any, any>) {
 		await db.execute(sql`drop table if exists \`aggregate_table\``);
 		await db.execute(
 			sql`
@@ -1361,6 +1363,141 @@ describe('common', () => {
 		await db.execute(sql`drop table __drizzle_migrations`);
 	});
 
+	test('migrator: local migration is unapplied. Migrations timestamp is less than last db migration', async () => {
+		const users = mysqlTable('migration_users', {
+			id: serial('id').primaryKey(),
+			name: text().notNull(),
+			email: text().notNull(),
+			age: int(),
+		});
+
+		const users2 = mysqlTable('migration_users2', {
+			id: serial('id').primaryKey(),
+			name: text().notNull(),
+			email: text().notNull(),
+			age: int(),
+		});
+
+		await db.execute(sql`drop table if exists \`__drizzle_migrations\`;`);
+		await db.execute(sql`drop table if exists ${users};`);
+		await db.execute(sql`drop table if exists ${users2};`);
+
+		// create migration directory
+		const migrationDir = './migrations/bun-mysql';
+		if (existsSync(migrationDir)) rmSync(migrationDir, { recursive: true });
+		mkdirSync(migrationDir, { recursive: true });
+
+		// first branch
+		mkdirSync(`${migrationDir}/20240101010101_initial`, { recursive: true });
+		writeFileSync(
+			`${migrationDir}/20240101010101_initial/migration.sql`,
+			'CREATE TABLE `migration_users` (\n`id` serial PRIMARY KEY NOT NULL,\n`name` text NOT NULL,\n`email` text NOT NULL\n);',
+		);
+		mkdirSync(`${migrationDir}/20240303030303_third`, { recursive: true });
+		writeFileSync(
+			`${migrationDir}/20240303030303_third/migration.sql`,
+			'ALTER TABLE `migration_users` ADD COLUMN `age` INT;',
+		);
+
+		await migrate.mysql(db, { migrationsFolder: migrationDir });
+		await db.insert(users).values({ name: 'John', email: '', age: 30 });
+		const res1 = await db.select().from(users);
+
+		// second migration was not applied yet
+		expect((async () => await db.insert(users2).values({ name: 'John', email: '', age: 30 }))()).rejects.toThrowError();
+
+		// insert migration with earlier timestamp
+		mkdirSync(`${migrationDir}/20240202020202_second`, { recursive: true });
+		writeFileSync(
+			`${migrationDir}/20240202020202_second/migration.sql`,
+			'CREATE TABLE `migration_users2` (\n`id` serial PRIMARY KEY NOT NULL,\n`name` text NOT NULL,\n`email` text NOT NULL\n,`age` INT\n);',
+		);
+		await migrate.mysql(db, { migrationsFolder: migrationDir });
+
+		await db.insert(users2).values({ name: 'John', email: '', age: 30 });
+		const res2 = await db.select().from(users2);
+
+		const expected = [{ id: 1, name: 'John', email: '', age: 30 }];
+		expect(res1).toStrictEqual(expected);
+		expect(res2).toStrictEqual(expected);
+
+		rmSync(migrationDir, { recursive: true });
+	});
+
+	// TODO: Breaks further tests
+	test.todo('managing multiple databases #1', async () => {
+		await db.execute('drop database if exists drizzle1;');
+		await db.execute('create database drizzle1;');
+		await db.execute('drop database if exists drizzle2;');
+		await db.execute('create database drizzle2;');
+
+		await db.execute(`use drizzle1`);
+		await migrate.mysql(db, { migrationsFolder: './drizzle2/mysql' });
+
+		// drizzle1
+		// session.transaction(), which calls client.begin(), spawns a new connection that resets the database context back to the default db from connection string
+		// After the migration completes, subsequent queries on db are running against the default db from connection string, not drizzle1
+		await db.execute(`use drizzle1`);
+		await db.insert(usersMigratorTable).values({ name: 'John', email: 'email' });
+		const result1 = await db.select().from(usersMigratorTable);
+
+		await db.execute(`use drizzle2`);
+		await migrate.mysql(db, { migrationsFolder: './drizzle2/mysql' });
+
+		// drizzle2
+		// session.transaction(), which calls client.begin(), spawns a new connection that resets the database context back to the default db from connection string
+		// After the migration completes, subsequent queries on db are running against the default db from connection string, not drizzle2
+		await db.execute(`use drizzle2`);
+		await db.insert(usersMigratorTable).values({ name: 'John', email: 'email' });
+		const result2 = await db.select().from(usersMigratorTable);
+
+		await db.execute('drop database drizzle1;');
+		await db.execute('drop database drizzle2;');
+
+		expect(result1).toEqual([{ id: 1, name: 'John', email: 'email' }]);
+		expect(result2).toEqual([{ id: 1, name: 'John', email: 'email' }]);
+	});
+
+	// TODO: Breaks further tests
+	test.skip('managing multiple databases #2', async () => {
+		await db.execute('create database if not exists drizzle1;');
+		await db.execute('create database if not exists drizzle2;');
+
+		const client1 = await new SQL({
+			url: process.env['MYSQL_CONNECTION_STRING'],
+			adapter: 'mysql',
+			bigint: true,
+			database: 'drizzle1',
+		}).connect();
+
+		const client2 = await new SQL({
+			url: process.env['MYSQL_CONNECTION_STRING'],
+			adapter: 'mysql',
+			bigint: true,
+			database: 'drizzle2',
+		}).connect();
+
+		const db1 = drizzle.mysql({ client: client1 });
+		const db2 = drizzle.mysql({ client: client2 });
+
+		await migrate.mysql(db1, { migrationsFolder: './drizzle2/mysql' });
+		await migrate.mysql(db2, { migrationsFolder: './drizzle2/mysql' });
+
+		// drizzle1
+		await db1.insert(usersMigratorTable).values({ name: 'John', email: 'email' });
+		const result1 = await db1.select().from(usersMigratorTable);
+
+		// drizzle2
+		await db2.insert(usersMigratorTable).values({ name: 'John', email: 'email' });
+		const result2 = await db2.select().from(usersMigratorTable);
+
+		await client1.unsafe('drop database drizzle1;');
+		await client2.unsafe('drop database drizzle2;');
+
+		expect(result1).toEqual([{ id: 1, name: 'John', email: 'email' }]);
+		expect(result2).toEqual([{ id: 1, name: 'John', email: 'email' }]);
+	});
+
 	test('insert via db.execute + select via db.execute', async () => {
 		await db.execute(sql`insert into ${usersTable} (${new Name(usersTable.name.name)}) values (${'John'})`);
 
@@ -1377,8 +1514,7 @@ describe('common', () => {
 		expect(inserted['affectedRows']).toStrictEqual(1);
 	});
 
-	// test.skipIf doesn't work
-	(Date.now() > new Date('2025.10.17').getTime() ? test : test.skip)('insert + select all possible dates', async () => {
+	test('insert + select all possible dates', async () => {
 		await db.execute(sql`drop table if exists \`datestable\``);
 		await db.execute(
 			sql`
@@ -1612,7 +1748,7 @@ describe('common', () => {
 				create table \`courses\` (
 					\`id\` serial primary key,
 					\`name\` text not null,
-					\`category_id\` int references \`course_categories\`(\`id\`)
+					\`category_id\` bigint unsigned references \`course_categories\`(\`id\`)
 				)
 			`,
 		);
@@ -2506,7 +2642,7 @@ describe('common', () => {
 			sql`create table ${users} (id serial not null primary key, name text)`,
 		);
 
-		await expect((async () => {
+		expect((async () => {
 			await db.insert(users).values({ name: undefined });
 		})()).resolves.toStrictEqual(undefined);
 
@@ -4644,8 +4780,7 @@ describe('common', () => {
 		});
 	});
 
-	// test.skipIf doesn't work
-	(Date.now() > new Date('2025.10.17').getTime() ? test : test.skip)('all types', async () => {
+	test('all types', async () => {
 		await db.execute(sql`
 			CREATE TABLE \`all_types\` (
 					\`serial\` serial AUTO_INCREMENT,
@@ -4805,9 +4940,9 @@ test('insert into ... select', async () => {
 		pk: primaryKey({ columns: [t.userId, t.notificationId] }),
 	}));
 
-	await db.execute(sql`drop table if exists ${notifications}`);
-	await db.execute(sql`drop table if exists ${users}`);
-	await db.execute(sql`drop table if exists ${userNotications}`);
+	await db.execute(sql`drop table if exists ${userNotications} cascade`);
+	await db.execute(sql`drop table if exists ${users} cascade`);
+	await db.execute(sql`drop table if exists ${notifications} cascade`);
 	await db.execute(sql`
 		create table ${notifications} (
 			\`id\` serial primary key,
@@ -4963,7 +5098,7 @@ test('MySqlTable :: select with `use index` hint on 1 index', async () => {
 		.where(eq(users.name, 'David'))
 		.toSQL();
 
-	expect(query.sql).toInclude('USE INDEX (users_name_index)');
+	expect(query.sql).toInclude('USE INDEX (`users_name_index`)');
 });
 
 test('MySqlTable :: select with `use index` hint on multiple indexes', async () => {
@@ -4993,7 +5128,7 @@ test('MySqlTable :: select with `use index` hint on multiple indexes', async () 
 		.where(eq(users.name, 'David'))
 		.toSQL();
 
-	expect(query.sql).toInclude('USE INDEX (users_name_index, users_age_index)');
+	expect(query.sql).toInclude('USE INDEX (`users_name_index`, `users_age_index`)');
 });
 
 test('MySqlTable :: select with `use index` hint on not existed index', async () => {
@@ -5177,7 +5312,7 @@ test('MySqlTable :: select with join `use index` hint on 1 index', async () => {
 			eq(posts.text, 'David post'),
 		)).toSQL();
 
-	expect(query.sql).toInclude('USE INDEX (posts_user_id_index)');
+	expect(query.sql).toInclude('USE INDEX (`posts_user_id_index`)');
 });
 
 test('MySqlTable :: select with cross join `use index` hint', async () => {
@@ -5287,7 +5422,7 @@ test('MySqlTable :: select with cross join `use index` hint on 1 index', async (
 			eq(posts.text, 'David post'),
 		)).toSQL();
 
-	expect(query.sql).toInclude('USE INDEX (posts_user_id_index)');
+	expect(query.sql).toInclude('USE INDEX (`posts_user_id_index`)');
 });
 
 test('MySqlTable :: select with join `use index` hint on multiple indexes', async () => {
@@ -5337,7 +5472,7 @@ test('MySqlTable :: select with join `use index` hint on multiple indexes', asyn
 			eq(posts.text, 'David post'),
 		)).toSQL();
 
-	expect(query.sql).toInclude('USE INDEX (posts_user_id_index, posts_text_index)');
+	expect(query.sql).toInclude('USE INDEX (`posts_user_id_index`, `posts_text_index`)');
 });
 
 test('MySqlTable :: select with join `use index` hint on not existed index', async () => {

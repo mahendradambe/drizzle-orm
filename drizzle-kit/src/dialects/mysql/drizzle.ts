@@ -1,4 +1,3 @@
-import type { Casing } from 'drizzle-orm';
 import { getTableName, is, SQL } from 'drizzle-orm';
 import { Relations } from 'drizzle-orm/_relations';
 import type { AnyMySqlColumn, AnyMySqlTable } from 'drizzle-orm/mysql-core';
@@ -8,6 +7,7 @@ import {
 	MySqlChar,
 	MySqlColumn,
 	MySqlCustomColumn,
+	MySqlDateTime,
 	MySqlDialect,
 	MySqlEnumColumn,
 	MySqlTable,
@@ -16,21 +16,19 @@ import {
 	MySqlVarChar,
 	MySqlView,
 } from 'drizzle-orm/mysql-core';
-import type { CasingType } from 'src/cli/validations/common';
-import { safeRegister } from '../../utils/utils-node';
-import { getColumnCasing, sqlToStr } from '../drizzle';
+import { loadModule } from '../../utils/utils-node';
+import { sqlToStr } from '../drizzle';
 import type { Column, InterimSchema } from './ddl';
 import { defaultNameForFK, nameForUnique, typeFor } from './grammar';
 
 export const defaultFromColumn = (
 	column: AnyMySqlColumn,
-	casing?: Casing,
 ): Column['default'] => {
 	if (typeof column.default === 'undefined') return null;
 	let value = column.default;
 
 	if (is(column.default, SQL)) {
-		let str = sqlToStr(column.default, casing);
+		let str = sqlToStr(column.default);
 		// we need to wrap unknown statements in () otherwise there's not enough info in Type.toSQL
 		if (!str.startsWith('(')) return `(${str})`;
 		return str;
@@ -56,9 +54,8 @@ export const upper = <T extends string>(value: T | undefined): Uppercase<T> | nu
 export const fromDrizzleSchema = (
 	tables: AnyMySqlTable[],
 	views: MySqlView[],
-	casing: CasingType | undefined,
 ): InterimSchema => {
-	const dialect = new MySqlDialect({ casing });
+	const dialect = new MySqlDialect();
 	const result: InterimSchema = {
 		tables: [],
 		columns: [],
@@ -90,7 +87,7 @@ export const fromDrizzleSchema = (
 		});
 
 		for (const column of columns) {
-			const name = getColumnCasing(column, casing);
+			const { name } = column;
 			const notNull: boolean = column.notNull;
 
 			const sqlType = column.getSQLType().replace(', ', ','); // TODO: remove, should be redundant real(6, 3)->real(6,3)
@@ -110,15 +107,15 @@ export const fromDrizzleSchema = (
 				}
 				: null;
 
-			const defaultValue = defaultFromColumn(column, casing);
+			const defaultValue = defaultFromColumn(column);
 			const type = is(column, MySqlEnumColumn)
 				? `enum(${column.enumValues?.map((it) => `'${it.replaceAll("'", "''")}'`).join(',')})`
 				: sqlType;
 
 			let onUpdateNow: boolean = false;
 			let onUpdateNowFsp: number | null = null;
-			if (is(column, MySqlTimestamp)) {
-				onUpdateNow = column.hasOnUpdateNow ?? false; // TODO
+			if (is(column, MySqlTimestamp) || is(column, MySqlDateTime)) {
+				onUpdateNow = column.hasOnUpdateNow ?? false;
 				onUpdateNowFsp = column.onUpdateNowFsp ?? null;
 			}
 
@@ -149,7 +146,7 @@ export const fromDrizzleSchema = (
 		}
 
 		for (const pk of primaryKeys) {
-			const columnNames = pk.columns.map((c: any) => getColumnCasing(c, casing));
+			const columnNames = pk.columns.map((c: any) => c.name);
 
 			result.pks.push({
 				entityType: 'pks',
@@ -165,7 +162,7 @@ export const fromDrizzleSchema = (
 					const sql = dialect.sqlToQuery(c).sql;
 					return { value: sql, isExpression: true };
 				}
-				return { value: getColumnCasing(c, casing), isExpression: false };
+				return { value: c.name, isExpression: false };
 			});
 
 			const name = unique.isNameExplicit
@@ -192,8 +189,8 @@ export const fromDrizzleSchema = (
 			// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 			const tableTo = getTableName(referenceFT);
 
-			const columnsFrom = reference.columns.map((it) => getColumnCasing(it, casing));
-			const columnsTo = reference.foreignColumns.map((it) => getColumnCasing(it, casing));
+			const columnsFrom = reference.columns.map((it) => it.name);
+			const columnsTo = reference.foreignColumns.map((it) => it.name);
 
 			let name = fk.isNameExplicit()
 				? fk.getName()
@@ -225,7 +222,7 @@ export const fromDrizzleSchema = (
 						const sql = dialect.sqlToQuery(it, 'indexes').sql;
 						return { value: sql, isExpression: true };
 					} else {
-						return { value: `${getColumnCasing(it, casing)}`, isExpression: false };
+						return { value: `${it.name}`, isExpression: false };
 					}
 				}),
 				algorithm: index.config.algorithm ?? null,
@@ -249,7 +246,21 @@ export const fromDrizzleSchema = (
 		}
 	}
 
-	for (const view of views) {
+	for (
+		// see in "./dialects/postgres/drizzle.ts" for more
+		const view of views.sort((a, b) => {
+			const aConfig = getViewConfig(a);
+			const bConfig = getViewConfig(b);
+
+			// If a's fields include b, a depends on b → b comes first
+			if (aConfig.query?.queryChunks.includes(b)) return 1;
+
+			// If b's fields include a, b depends on a → a comes first
+			if (bConfig.query?.queryChunks.includes(a)) return -1;
+
+			return 0;
+		})
+	) {
 		const cfg = getViewConfig(view);
 		const {
 			isExisting,
@@ -295,17 +306,15 @@ export const prepareFromSchemaFiles = async (imports: string[]) => {
 	const views: MySqlView[] = [];
 	const relations: Relations[] = [];
 
-	await safeRegister(async () => {
-		for (let i = 0; i < imports.length; i++) {
-			const it = imports[i];
-			const i0: Record<string, unknown> = require(`${it}`);
-			const prepared = prepareFromExports(i0);
+	for (let i = 0; i < imports.length; i++) {
+		const it = imports[i];
+		const i0: Record<string, unknown> = await loadModule(it);
+		const prepared = prepareFromExports(i0);
 
-			tables.push(...prepared.tables);
-			views.push(...prepared.views);
-			relations.push(...prepared.relations);
-		}
-	});
+		tables.push(...prepared.tables);
+		views.push(...prepared.views);
+		relations.push(...prepared.relations);
+	}
 	return { tables: Array.from(new Set(tables)), views, relations };
 };
 

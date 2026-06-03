@@ -1,4 +1,3 @@
-import type { ColumnBaseConfig } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import type { PgTable } from '~/pg-core/table.ts';
 import { getColumnNameAndConfig } from '~/utils.ts';
@@ -29,8 +28,11 @@ export class PgBinaryVectorBuilder extends PgColumnBuilder<
 	}
 }
 
-export class PgBinaryVector<T extends ColumnBaseConfig<'string binary'>> extends PgColumn<T> {
+export class PgBinaryVector extends PgColumn<'string binary'> {
 	static override readonly [entityKind]: string = 'PgBinaryVector';
+
+	/** @internal */
+	override readonly codec = 'bit';
 
 	getSQLType(): string {
 		return `bit(${this.length})`;

@@ -1,10 +1,9 @@
-import type { ColumnBaseConfig } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import type { PgTable } from '../table.ts';
 import { PgColumn } from './common.ts';
-import { PgIntColumnBaseBuilder } from './int.common.ts';
+import { PgIntColumnBuilder } from './int.common.ts';
 
-export class PgIntegerBuilder extends PgIntColumnBaseBuilder<{
+export class PgIntegerBuilder extends PgIntColumnBuilder<{
 	dataType: 'number int32';
 	data: number;
 	driverParam: number | string;
@@ -21,20 +20,17 @@ export class PgIntegerBuilder extends PgIntColumnBaseBuilder<{
 	}
 }
 
-export class PgInteger<T extends ColumnBaseConfig<'number int32'>> extends PgColumn<T> {
+export class PgInteger extends PgColumn<'number int32'> {
 	static override readonly [entityKind]: string = 'PgInteger';
+
+	/** @internal */
+	override readonly codec = 'int';
 
 	getSQLType(): string {
 		return 'integer';
 	}
-
-	override mapFromDriverValue(value: number | string): number {
-		if (typeof value === 'string') {
-			return Number.parseInt(value);
-		}
-		return value;
-	}
 }
+
 export function integer(name?: string): PgIntegerBuilder {
 	return new PgIntegerBuilder(name ?? '');
 }

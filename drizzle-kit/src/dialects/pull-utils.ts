@@ -1,5 +1,5 @@
 import { Minimatch } from 'minimatch';
-import type { EntitiesFilter, ExtensionsFilter, SchemasFilter, TablesFilter } from 'src/cli/validations/cli';
+import type { EntitiesFilter, ExtensionsFilter, SchemasFilter, TablesFilter } from 'src/cli/validations/common';
 import { assertUnreachable } from 'src/utils';
 import type { Dialect } from 'src/utils/schemaValidator';
 
@@ -45,6 +45,7 @@ export const prepareEntityFilter = (
 		: params.schemas;
 
 	const existingSchemas = existingEntities.filter((x) => x.type === 'schema').map((x) => x.name);
+
 	const schemasFilter = prepareSchemasFitler(schemasConfig, existingSchemas);
 
 	const postgisTablesGlobs = ['!geography_columns', '!geometry_columns', '!spatial_ref_sys'];
@@ -94,8 +95,7 @@ const prepareSchemasFitler = (globs: string[], schemasExisting: string[]) => {
 	return (it: Schema) => {
 		if (!filterForExisting(it)) return false;
 
-		let flags: boolean[] = [];
-
+		const flags: boolean[] = [];
 		for (let matcher of matchers) {
 			if (matcher.negate && !matcher.match(it.name)) {
 				flags.push(false);
@@ -107,6 +107,7 @@ const prepareSchemasFitler = (globs: string[], schemasExisting: string[]) => {
 		if (flags.length > 0) {
 			return flags.every(Boolean);
 		}
+
 		return false;
 	};
 };

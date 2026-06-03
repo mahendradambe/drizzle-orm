@@ -1,4 +1,4 @@
-import { integer, pgEnum, pgSchema, pgTable, serial, text, varchar } from 'drizzle-orm/pg-core';
+import { integer, pgEnum, pgSchema, pgTable, serial, text, uuid, varchar } from 'drizzle-orm/pg-core';
 import { afterAll, beforeAll, beforeEach, expect, test } from 'vitest';
 import type { TestDatabase } from './mocks';
 import { diff, prepareTestDatabase, push } from './mocks';
@@ -650,7 +650,7 @@ test('enums #23', async () => {
 		en,
 		table: pgTable('table', {
 			en1: en().array(),
-			en2: en().array().array(),
+			en2: en().array('[][]'),
 		}),
 	};
 
@@ -661,6 +661,36 @@ test('enums #23', async () => {
 
 	const st0 = [
 		'CREATE TABLE "table" (\n\t"en1" "schema"."e"[],\n\t"en2" "schema"."e"[][]\n);\n',
+	];
+	expect(st).toStrictEqual(st0);
+	expect(pst).toStrictEqual(st0);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5609
+test('enums #24', async () => {
+	const schema = pgSchema('schema');
+	const en = schema.enum('char_enum', ['a', 'b']);
+
+	const from = {
+		schema,
+		en,
+	};
+
+	const to = {
+		schema,
+		en,
+		table: schema.table('table', {
+			en: en(),
+		}),
+	};
+
+	const { sqlStatements: st } = await diff(from, to, []);
+
+	await push({ db, to: from });
+	const { sqlStatements: pst } = await push({ db, to });
+
+	const st0 = [
+		'CREATE TABLE "schema"."table" (\n\t"en" "schema"."char_enum"\n);\n',
 	];
 	expect(st).toStrictEqual(st0);
 	expect(pst).toStrictEqual(st0);
@@ -757,7 +787,14 @@ test('drop enum values', async () => {
 	];
 
 	expect(st).toStrictEqual(st0);
-	expect(pst).toStrictEqual(st0);
+
+	// that breaks in pipeline. Order is different
+	expect(pst[0]).toStrictEqual(expect.toBeOneOf([st0[0], st0[1]]));
+	expect(pst[1]).toStrictEqual(expect.toBeOneOf([st0[0], st0[1]]));
+	expect(pst[2]).toStrictEqual(st0[2]);
+	expect(pst[3]).toStrictEqual(st0[3]);
+	expect(pst[4]).toStrictEqual(expect.toBeOneOf([st0[4], st0[5]]));
+	expect(pst[5]).toStrictEqual(expect.toBeOneOf([st0[4], st0[5]]));
 });
 
 test('drop enum', async () => {
@@ -838,8 +875,16 @@ test('drop enum value. enum is columns data type', async () => {
 		`ALTER TABLE "table" ALTER COLUMN "column" SET DATA TYPE "enum" USING "column"::"enum";`,
 		`ALTER TABLE "new_schema"."table" ALTER COLUMN "column" SET DATA TYPE "enum" USING "column"::"enum";`,
 	];
+
 	expect(st).toStrictEqual(st0);
-	expect(pst).toStrictEqual(st0);
+
+	// that breaks in pipeline. Order is different
+	expect(pst[0]).toStrictEqual(expect.toBeOneOf([st0[0], st0[1]]));
+	expect(pst[1]).toStrictEqual(expect.toBeOneOf([st0[0], st0[1]]));
+	expect(pst[2]).toStrictEqual(st0[2]);
+	expect(pst[3]).toStrictEqual(st0[3]);
+	expect(pst[4]).toStrictEqual(expect.toBeOneOf([st0[4], st0[5]]));
+	expect(pst[5]).toStrictEqual(expect.toBeOneOf([st0[4], st0[5]]));
 });
 
 test('shuffle enum values', async () => {
@@ -884,7 +929,14 @@ test('shuffle enum values', async () => {
 		`ALTER TABLE "new_schema"."table" ALTER COLUMN "column" SET DATA TYPE "enum" USING "column"::"enum";`,
 	];
 	expect(st).toStrictEqual(st0);
-	expect(pst).toStrictEqual(st0);
+
+	// that breaks in pipeline. Order is different
+	expect(pst[0]).toStrictEqual(expect.toBeOneOf([st0[0], st0[1]]));
+	expect(pst[1]).toStrictEqual(expect.toBeOneOf([st0[0], st0[1]]));
+	expect(pst[2]).toStrictEqual(st0[2]);
+	expect(pst[3]).toStrictEqual(st0[3]);
+	expect(pst[4]).toStrictEqual(expect.toBeOneOf([st0[4], st0[5]]));
+	expect(pst[5]).toStrictEqual(expect.toBeOneOf([st0[4], st0[5]]));
 });
 
 test('column is enum type with default value. shuffle enum', async () => {
@@ -1099,7 +1151,7 @@ test('column is array enum with custom size type with default value. shuffle enu
 	const from = {
 		enum1,
 		table: pgTable('table', {
-			column: enum1('column').array(3).default(['value2']),
+			column: enum1('column').array().default(['value2']),
 		}),
 	};
 
@@ -1107,7 +1159,7 @@ test('column is array enum with custom size type with default value. shuffle enu
 	const to = {
 		enum2,
 		table: pgTable('table', {
-			column: enum2('column').array(3).default(['value2']),
+			column: enum2('column').array().default(['value2']),
 		}),
 	};
 
@@ -1138,7 +1190,7 @@ test('column is array enum with custom size type. shuffle enum', async () => {
 	const from = {
 		enum1,
 		table: pgTable('table', {
-			column: enum1('column').array(3),
+			column: enum1('column').array(),
 		}),
 	};
 
@@ -1146,7 +1198,7 @@ test('column is array enum with custom size type. shuffle enum', async () => {
 	const to = {
 		enum2,
 		table: pgTable('table', {
-			column: enum2('column').array(3),
+			column: enum2('column').array(),
 		}),
 	};
 
@@ -1175,7 +1227,7 @@ test('column is array of enum with multiple dimenions with custom sizes type. sh
 	const from = {
 		enum1,
 		table: pgTable('table', {
-			column: enum1('column').array(3).array(2),
+			column: enum1('column').array('[][]'),
 		}),
 	};
 
@@ -1183,7 +1235,7 @@ test('column is array of enum with multiple dimenions with custom sizes type. sh
 	const to = {
 		enum2,
 		table: pgTable('table', {
-			column: enum2('column').array(3).array(2),
+			column: enum2('column').array('[][]'),
 		}),
 	};
 
@@ -1212,7 +1264,7 @@ test('column is array of enum with multiple dimenions type with custom size with
 	const from = {
 		enum1,
 		table: pgTable('table', {
-			column: enum1('column').array(3).array(2).default([['value2']]),
+			column: enum1('column').array('[][]').default([['value2']]),
 		}),
 	};
 
@@ -1220,7 +1272,7 @@ test('column is array of enum with multiple dimenions type with custom size with
 	const to = {
 		enum2,
 		table: pgTable('table', {
-			column: enum2('column').array(3).array(2).default([['value2']]),
+			column: enum2('column').array('[][]').default([['value2']]),
 		}),
 	};
 
@@ -1336,7 +1388,7 @@ test('column is array enum type with custom size with default value. custom sche
 		schema,
 		enum1,
 		table: schema.table('table', {
-			column: enum1('column').array(3).default(['value2']),
+			column: enum1('column').array().default(['value2']),
 		}),
 	};
 
@@ -1345,7 +1397,7 @@ test('column is array enum type with custom size with default value. custom sche
 		schema,
 		enum2,
 		table: schema.table('table', {
-			column: enum2('column').array(3).default(['value2']),
+			column: enum2('column').array().default(['value2']),
 		}),
 	};
 
@@ -1376,7 +1428,7 @@ test('column is array enum type with custom size. custom schema. shuffle enum', 
 		schema,
 		enum1,
 		table: schema.table('table', {
-			column: enum1('column').array(3),
+			column: enum1('column').array(),
 		}),
 	};
 
@@ -1385,7 +1437,7 @@ test('column is array enum type with custom size. custom schema. shuffle enum', 
 		schema,
 		enum2,
 		table: schema.table('table', {
-			column: enum2('column').array(3),
+			column: enum2('column').array(),
 		}),
 	};
 
@@ -1682,14 +1734,14 @@ test('change data type from array standart type with custom size to array enum w
 	const from = {
 		enum1,
 		table: pgTable('table', {
-			column: varchar('column').array(3).default(['value2']),
+			column: varchar('column').array().default(['value2']),
 		}),
 	};
 
 	const to = {
 		enum1,
 		table: pgTable('table', {
-			column: enum1('column').array(3).default(['value3']),
+			column: enum1('column').array().default(['value3']),
 		}),
 	};
 
@@ -1714,14 +1766,14 @@ test('change data type from array standart type with custom size to array enum w
 	const from = {
 		enum1,
 		table: pgTable('table', {
-			column: varchar('column').array(2),
+			column: varchar('column').array(),
 		}),
 	};
 
 	const to = {
 		enum1,
 		table: pgTable('table', {
-			column: enum1('column').array(2),
+			column: enum1('column').array(),
 		}),
 	};
 
@@ -1848,14 +1900,14 @@ test('change data type from array enum with custom size type to array standart t
 	const from = {
 		enum1,
 		table: pgTable('table', {
-			column: enum1('column').array(2),
+			column: enum1('column').array(),
 		}),
 	};
 
 	const to = {
 		enum1,
 		table: pgTable('table', {
-			column: varchar('column').array(2),
+			column: varchar('column').array(),
 		}),
 	};
 
@@ -1916,14 +1968,14 @@ test('change data type from array enum type with custom size to array standart t
 	const from = {
 		enum1,
 		table: pgTable('table', {
-			column: enum1('column').array(3).default(['value2']),
+			column: enum1('column').array().default(['value2']),
 		}),
 	};
 
 	const to = {
 		enum1,
 		table: pgTable('table', {
-			column: varchar('column').array(3).default(['value2']),
+			column: varchar('column').array().default(['value2']),
 		}),
 	};
 
@@ -2036,13 +2088,13 @@ test('change data type from standart type to standart type. columns are arrays',
 test('change data type from standart type to standart type. columns are arrays with custom sizes', async () => {
 	const from = {
 		table: pgTable('table', {
-			column: varchar('column').array(2),
+			column: varchar('column').array(),
 		}),
 	};
 
 	const to = {
 		table: pgTable('table', {
-			column: text('column').array(2),
+			column: text('column').array(),
 		}),
 	};
 
@@ -2094,13 +2146,13 @@ test('change data type from standart type to standart type. columns are arrays. 
 test('change data type from standart type to standart type. columns are arrays with custom sizes.column has default', async () => {
 	const from = {
 		table: pgTable('table', {
-			column: varchar('column').array(2).default(['hello']),
+			column: varchar('column').array().default(['hello']),
 		}),
 	};
 
 	const to = {
 		table: pgTable('table', {
-			column: text('column').array(2).default(['hello']),
+			column: text('column').array().default(['hello']),
 		}),
 	};
 
@@ -2392,6 +2444,7 @@ test('enums defaults', async () => {
 });
 
 // https://github.com/drizzle-team/drizzle-orm/issues/5129
+// https://github.com/drizzle-team/drizzle-orm/issues/5121
 test('enums camelcase', async () => {
 	const en1 = pgEnum('camelCase', ['active', 'inactive']);
 
@@ -2410,3 +2463,91 @@ test('enums camelcase', async () => {
 		'CREATE TABLE "table" (\n\t"col1" "camelCase" DEFAULT \'active\'::"camelCase"\n);\n',
 	]);
 });
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5072
+// tests with enum recreations are handled above
+test('drop enum', async () => {
+	const en1 = pgEnum('camelCase', ['active', 'inactive']);
+
+	const to = {
+		en1,
+	};
+
+	const res = await diff({}, to, []);
+	await push({ db, to });
+
+	expect(res.sqlStatements).toStrictEqual([
+		"CREATE TYPE \"camelCase\" AS ENUM('active', 'inactive');",
+	]);
+
+	const res2 = await diff(res.next, {}, []);
+	await push({ db, to: {} });
+
+	expect(res2.sqlStatements).toStrictEqual([
+		'DROP TYPE "camelCase";',
+	]);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/4982
+// enhancement
+test.skipIf(Date.now() < +new Date('2026-06-20'))(
+	'alter enum values; enum value is column default; table with data',
+	async () => {
+		enum AppStatus1 {
+			PENDING = 'PENDING',
+			ACTIVE = 'ACTIVE',
+			INACTIVE = 'INACTIVE',
+			BANNED = 'BANNED',
+		}
+
+		const appStatusEnum1 = pgEnum('app_status', AppStatus1);
+
+		const schema1 = {
+			appStatusEnum1,
+			table1: pgTable('users', {
+				id: uuid('id').primaryKey().defaultRandom(),
+				appStatus: appStatusEnum1('app_status').default(AppStatus1.PENDING).notNull(),
+				appStatusNotes: text('app_status_notes'),
+			}),
+		};
+
+		const { next: n1 } = await diff({}, schema1, []);
+		await push({ db, to: schema1 });
+		await db.query(`insert into "users"("app_status") values ('PENDING'), ('PENDING');`);
+
+		enum AppStatus2 {
+			IN_REVIEW = 'IN_REVIEW',
+			ACTIVE = 'ACTIVE',
+			PAUSED = 'PAUSED',
+			BANNED = 'BANNED',
+		}
+
+		const appStatusEnum2 = pgEnum('app_status', AppStatus2);
+
+		const schema2 = {
+			appStatusEnum2,
+			table1: pgTable('users', {
+				id: uuid('id').primaryKey().defaultRandom(),
+				appStatus: appStatusEnum2('app_status').default(AppStatus2.IN_REVIEW).notNull(),
+				appStatusNotes: text('app_status_notes'),
+			}),
+		};
+
+		const { sqlStatements: st2 } = await diff(n1, schema2, []);
+		const { sqlStatements: pst2 } = await push({ db, to: schema2 });
+
+		// if it can be implemented, there is an advantage comparing to current flow:
+		// drizzle-kit can alter enum values in tables with data;
+		// (
+		// already inserted old enum values automatically changes to new;
+		// old default enum value changes to new automatically as well;
+		// on table with 1M rows all storing old enum value, rename query executes in 37ms;
+		// )
+		const expectedSt2 = [
+			`ALTER TYPE "app_status" RENAME VALUE 'PENDING' TO 'IN_REVIEW';`,
+			`ALTER TYPE "app_status" RENAME VALUE 'INACTIVE' TO 'PAUSED';`,
+		];
+		expect(st2).toStrictEqual(expectedSt2);
+		expect(pst2).toStrictEqual(expectedSt2);
+	},
+);

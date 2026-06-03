@@ -14,7 +14,7 @@ import type { MsSqlTable } from '~/mssql-core/table.ts';
 import type { SelectResultFields } from '~/query-builders/select.types.ts';
 import { QueryPromise } from '~/query-promise.ts';
 import type { ExtractObjectValues } from '~/relations.ts';
-import type { Query, SQL, SQLWrapper } from '~/sql/sql.ts';
+import type { Placeholder, Query, SQL, SQLWrapper } from '~/sql/sql.ts';
 import { type InferInsertModel, Table } from '~/table.ts';
 import { mapUpdateSet, orderSelectedFields, type UpdateSet } from '~/utils.ts';
 import type { MsSqlColumn } from '../columns/common.ts';
@@ -34,6 +34,7 @@ export type MsSqlUpdateSetSource<TTable extends MsSqlTable> =
 	& {
 		[Key in keyof InferInsertModel<TTable>]?:
 			| GetColumnData<TTable['_']['columns'][Key], 'query'>
+			| Placeholder
 			| SQL;
 	}
 	& {};
@@ -298,8 +299,7 @@ export class MsSqlUpdateBase<
 	}
 
 	toSQL(): Query {
-		const { typings: _typings, ...rest } = this.dialect.sqlToQuery(this.getSQL());
-		return rest;
+		return this.dialect.sqlToQuery(this.getSQL());
 	}
 
 	prepare(): MsSqlUpdatePrepare<this> {

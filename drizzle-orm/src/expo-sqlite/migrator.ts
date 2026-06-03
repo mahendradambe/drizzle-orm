@@ -1,6 +1,7 @@
 import { useEffect, useReducer } from 'react';
-import { formatToMillis, type MigrationMeta } from '~/migrator.ts';
+import { formatToMillis } from '~/migrator.utils.ts';
 import type { AnyRelations, EmptyRelations } from '~/relations.ts';
+import type { MigrationMeta } from '../migrator.ts';
 import type { ExpoSQLiteDatabase } from './driver.ts';
 
 interface MigrationConfig {
@@ -30,6 +31,7 @@ async function readMigrationFiles({ migrations }: MigrationConfig): Promise<Migr
 				bps: true,
 				folderMillis: migrationDate,
 				hash: '',
+				name: key,
 			});
 		} catch {
 			throw new Error(`Failed to parse migration: ${key}`);

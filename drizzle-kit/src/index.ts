@@ -1,5 +1,5 @@
 import type { ConnectionOptions } from 'tls';
-import type { Driver, Prefix } from './cli/validations/common';
+import type { Driver } from './cli/validations/common';
 import type { Dialect } from './utils/schemaValidator';
 
 // import {SslOptions} from 'mysql2'
@@ -117,11 +117,9 @@ export type Config =
 		schema?: string | string[];
 		verbose?: boolean;
 		strict?: boolean;
-		casing?: 'camelCase' | 'snake_case';
 		migrations?: {
 			table?: string;
 			schema?: string;
-			prefix?: Prefix;
 		};
 		introspect?: {
 			casing: 'camel' | 'preserve';
@@ -232,29 +230,6 @@ export type Config =
 				| {
 					url: string;
 				};
-		}
-		| {
-			dialect: Verify<Dialect, 'gel'>;
-			dbCredentials?:
-				& {
-					tlsSecurity?:
-						| 'insecure'
-						| 'no_host_verification'
-						| 'strict'
-						| 'default';
-				}
-				& (
-					| {
-						url: string;
-					}
-					| ({
-						host: string;
-						port?: number;
-						user?: string;
-						password?: string;
-						database: string;
-					})
-				);
 		}
 		// TODO update?
 		| {

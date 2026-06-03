@@ -1,463 +1,313 @@
-import { existsSync, readFileSync } from 'fs';
-import { dirname } from 'path';
-import { assertUnreachable } from '../../utils';
+import {
+	AbstractCommutativity,
+	type CommutativityStatementDefinitions,
+	type CommutativityStatementInfo,
+} from '../../commutativity/engine';
 import { createDDL, type MysqlDDL } from './ddl';
 import { ddlDiffDry } from './diff';
 import { drySnapshot, type MysqlSnapshot } from './snapshot';
 import type { JsonStatement } from './statements';
 
-export type BranchConflict = {
-	parentId: string;
-	parentPath?: string;
-	branchA: { headId: string; path: string; statement: JsonStatement };
-	branchB: { headId: string; path: string; statement: JsonStatement };
+type FootprintTarget = {
+	objectName: string;
+	columnName: string;
 };
 
-export type MySQLNonCommutativityReport = {
-	conflicts: BranchConflict[];
-	leafNodes: string[]; // IDs of all leaf nodes (terminal nodes with no children)
-};
+type StatementInfo = CommutativityStatementInfo<JsonStatement, FootprintTarget>;
 
-type SnapshotNode<TSnapshot extends { id: string; prevIds: string[] }> = {
-	id: string;
-	prevIds: string[];
-	path: string; // full path to snapshot.json
-	folderPath: string; // folder containing snapshot.json
-	raw: TSnapshot;
-};
+type StatementDefinitions = CommutativityStatementDefinitions<
+	JsonStatement,
+	FootprintTarget
+>;
 
-const footprintMap: Record<JsonStatement['type'], JsonStatement['type'][]> = {
-	// Table operations
-	create_table: [
+function makeTarget(objectName: string, columnName = ''): FootprintTarget {
+	return { objectName, columnName };
+}
+
+/**
+ * MySQL-specific commutativity rules.
+ *
+ * How to read this file:
+ * - `getStatementDefinitions()` is the main source of truth.
+ * - Each statement definition answers two questions:
+ *   1. `conflicts`: which other statement types are incompatible with this one.
+ *   2. `buildInfo`: which resource footprints this statement occupies.
+ * - `buildInfo().primary` is the exact resource touched by the statement.
+ * - `buildInfo().ancestors` are explicit parent resources, usually the owning table.
+ * - Unlike Postgres, MySQL has no extra schema-level ancestry here, so matching is
+ *   driven by exact targets plus table ancestors.
+ *
+ * Practical guide for fixes:
+ * - False positive or missed conflict for same-level objects like column->column,
+ *   index->index, table->table, or view->view:
+ *   change the `conflicts` array for the relevant statements in
+ *   `getStatementDefinitions()`.
+ * - False positive or missed conflict for parent/child relations like
+ *   table->column or table->index:
+ *   adjust the child's `ancestors` in `buildInfo()` and/or the parent's
+ *   `conflicts` array.
+ * - Wrong human-readable conflict message only:
+ *   change `describeStatement()` or `schemaLevelActions`. Those affect reporting,
+ *   not matching semantics.
+ *
+ * Rule of thumb:
+ * - If the problem is "these two statement types should or should not conflict",
+ *   edit `conflicts`.
+ * - If the problem is "this statement is matched at the wrong scope",
+ *   edit `primary` or `ancestors`.
+ */
+class MysqlCommutativity extends AbstractCommutativity<
+	JsonStatement,
+	MysqlSnapshot,
+	FootprintTarget
+> {
+	private schemaLevelActions = new Set([
 		'create_table',
 		'drop_table',
 		'rename_table',
-	],
-	drop_table: [
-		'create_table',
-		'drop_table',
-		'rename_table',
-		'add_column',
-		'drop_column',
-		'alter_column',
-		'recreate_column',
-		'rename_column',
-		'create_index',
-	],
-	rename_table: [
-		'create_table',
-		'drop_table',
-		'rename_table',
-	],
+		'create_view',
+		'drop_view',
+		'alter_view',
+		'rename_view',
+	]);
 
-	// Column operations
-	add_column: ['add_column', 'alter_column', 'drop_column', 'rename_column', 'recreate_column'],
-	drop_column: ['add_column', 'drop_column', 'alter_column', 'rename_column', 'recreate_column'],
-	alter_column: ['add_column', 'drop_column', 'alter_column', 'rename_column', 'recreate_column'],
-	recreate_column: ['add_column', 'drop_column', 'alter_column', 'recreate_column', 'rename_column'],
-	rename_column: ['add_column', 'drop_column', 'alter_column', 'recreate_column', 'rename_column'],
+	protected override getStatementDefinitions(): StatementDefinitions {
+		return {
+			// Table operations
+			create_table: {
+				conflicts: ['create_table', 'drop_table', 'rename_table'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.table.name),
+					ancestors: [],
+				}),
+			},
+			drop_table: {
+				conflicts: [
+					'create_table',
+					'drop_table',
+					'rename_table',
+					'add_column',
+					'drop_column',
+					'alter_column',
+					'recreate_column',
+					'rename_column',
+					'create_index',
+				],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.table),
+					ancestors: [],
+				}),
+			},
+			rename_table: {
+				conflicts: [
+					'create_table',
+					'drop_table',
+					'rename_table',
+					'create_index',
+				],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.from),
+					ancestors: [],
+				}),
+			},
 
-	// Index operations
-	create_index: ['create_index', 'drop_index', 'drop_table'],
-	drop_index: ['create_index', 'drop_index'],
+			// Column operations
+			add_column: {
+				conflicts: [
+					'add_column',
+					'alter_column',
+					'drop_column',
+					'rename_column',
+					'recreate_column',
+				],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.column.table, statement.column.name),
+					ancestors: [makeTarget(statement.column.table)],
+				}),
+			},
+			drop_column: {
+				conflicts: [
+					'add_column',
+					'drop_column',
+					'alter_column',
+					'rename_column',
+					'recreate_column',
+				],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.column.table, statement.column.name),
+					ancestors: [makeTarget(statement.column.table)],
+				}),
+			},
+			alter_column: {
+				conflicts: [
+					'add_column',
+					'drop_column',
+					'alter_column',
+					'rename_column',
+					'recreate_column',
+				],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.diff.table, statement.column.name),
+					ancestors: [makeTarget(statement.diff.table)],
+				}),
+			},
+			recreate_column: {
+				conflicts: [
+					'add_column',
+					'drop_column',
+					'alter_column',
+					'recreate_column',
+					'rename_column',
+				],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.column.table, statement.column.name),
+					ancestors: [makeTarget(statement.column.table)],
+				}),
+			},
+			rename_column: {
+				conflicts: [
+					'add_column',
+					'drop_column',
+					'alter_column',
+					'recreate_column',
+					'rename_column',
+				],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.table, statement.from),
+					ancestors: [makeTarget(statement.table)],
+				}),
+			},
 
-	// Primary key operations
-	drop_pk: ['drop_pk', 'create_pk'],
-	create_pk: ['drop_pk', 'create_pk'],
+			// Index operations
+			create_index: {
+				conflicts: ['create_index', 'drop_index', 'drop_table'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.index.table, statement.index.name),
+					ancestors: [makeTarget(statement.index.table)],
+				}),
+			},
+			drop_index: {
+				conflicts: ['create_index', 'drop_index'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.index.table, statement.index.name),
+					ancestors: [makeTarget(statement.index.table)],
+				}),
+			},
 
-	// Foreign key operations
-	create_fk: ['create_fk'],
+			// Primary key operations
+			drop_pk: {
+				conflicts: ['drop_pk', 'create_pk'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.pk.table),
+					ancestors: [],
+				}),
+			},
+			create_pk: {
+				conflicts: ['drop_pk', 'create_pk'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.pk.table),
+					ancestors: [],
+				}),
+			},
 
-	// TODO statements
-	drop_constraint: [],
-	create_check: [],
+			// Foreign key operations
+			create_fk: {
+				conflicts: ['create_fk', 'drop_constraint'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.fk.table),
+					ancestors: [],
+				}),
+			},
 
-	// View operations
-	create_view: ['create_view', 'drop_view', 'rename_view', 'alter_view'],
-	drop_view: ['create_view', 'drop_view', 'rename_view', 'alter_view'],
-	rename_view: ['create_view', 'drop_view', 'rename_view', 'alter_view'],
-	alter_view: ['create_view', 'drop_view', 'rename_view', 'alter_view'],
-};
+			// Constraint operations (FK drops / check drops)
+			drop_constraint: {
+				conflicts: ['drop_constraint', 'create_fk', 'create_check'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.table),
+					ancestors: [],
+				}),
+			},
 
-function formatFootprint(action: string, objectName: string, columnName: string): string {
-	return `${action};${objectName};${columnName}`;
-}
+			// Check constraint operations
+			create_check: {
+				conflicts: ['create_check', 'drop_constraint'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.check.table),
+					ancestors: [],
+				}),
+			},
 
-function extractStatementInfo(
-	statement: JsonStatement,
-): { action: string; schema: string; objectName: string; columnName: string } {
-	const action = statement.type;
-	let schema = '';
-	let objectName = '';
-	let columnName = '';
-
-	switch (statement.type) {
-		// Table operations
-		case 'create_table':
-			objectName = statement.table.name;
-			break;
-		case 'drop_table':
-			objectName = statement.table;
-			break;
-		case 'rename_table':
-			schema = statement.to;
-			objectName = statement.from;
-			break;
-
-		// Column operations
-		case 'add_column':
-		case 'drop_column':
-		case 'recreate_column':
-			objectName = statement.column.table;
-			columnName = statement.column.name;
-			break;
-		case 'alter_column':
-			objectName = statement.diff.table;
-			columnName = statement.column.name;
-			break;
-		case 'rename_column':
-			objectName = statement.table;
-			columnName = statement.from;
-			break;
-
-		// Index operations
-		case 'create_index':
-		case 'drop_index':
-			objectName = statement.index.table;
-			// columnName = statement.index.name;
-			break;
-
-		// Primary key operations
-		case 'drop_pk':
-			objectName = statement.pk.table;
-			break;
-		case 'create_pk':
-			objectName = statement.pk.table;
-			break;
-
-		// Foreign key operations
-		case 'create_fk':
-			objectName = statement.fk.table;
-			break;
-
-		// Check constraint operations
-		case 'create_check':
-			objectName = statement.check.table;
-			break;
-
-		// Constraint operations
-		case 'drop_constraint':
-			objectName = statement.table;
-			break;
-
-		// View operations
-		case 'create_view':
-			objectName = statement.view.name;
-			break;
-		case 'drop_view':
-			objectName = statement.name;
-			break;
-		case 'alter_view':
-			objectName = statement.view.name;
-			break;
-		case 'rename_view':
-			objectName = statement.from;
-			break;
-
-		default:
-			assertUnreachable(statement);
-	}
-
-	return { action, schema, objectName, columnName };
-}
-
-export function footprint(statement: JsonStatement, snapshot?: MysqlSnapshot): [string[], string[]] {
-	const info = extractStatementInfo(statement);
-	const conflictingTypes = footprintMap[statement.type];
-
-	const statementFootprint = [formatFootprint(statement.type, info.objectName, info.columnName)];
-
-	let conflictFootprints = conflictingTypes.map((conflictType) =>
-		formatFootprint(conflictType, info.objectName, info.columnName)
-	);
-
-	if (snapshot) {
-		const expandedFootprints = expandFootprintsFromSnapshot(statement, info, conflictingTypes, snapshot);
-		conflictFootprints = [...conflictFootprints, ...expandedFootprints];
-	}
-
-	return [statementFootprint, conflictFootprints];
-}
-
-function generateLeafFootprints(statements: JsonStatement[], snapshot?: MysqlSnapshot): {
-	statementHashes: Array<{ hash: string; statement: JsonStatement }>;
-	conflictFootprints: Array<{ hash: string; statement: JsonStatement }>;
-} {
-	const statementHashes: Array<{ hash: string; statement: JsonStatement }> = [];
-	const conflictFootprints: Array<{ hash: string; statement: JsonStatement }> = [];
-
-	for (let i = 0; i < statements.length; i++) {
-		const statement = statements[i];
-		const [hashes, conflicts] = footprint(statement, snapshot);
-
-		for (const hash of hashes) {
-			statementHashes.push({ hash, statement });
-		}
-
-		for (const conflict of conflicts) {
-			conflictFootprints.push({ hash: conflict, statement });
-		}
-	}
-
-	return { statementHashes, conflictFootprints };
-}
-
-function expandFootprintsFromSnapshot(
-	statement: JsonStatement,
-	info: { action: string; schema: string; objectName: string; columnName: string },
-	conflictingTypes: JsonStatement['type'][],
-	snapshot: MysqlSnapshot,
-): string[] {
-	const expandedFootprints: string[] = [];
-
-	if (
-		statement.type === 'drop_table' || statement.type === 'rename_table'
-	) {
-		const childEntities = findChildEntitiesInTableFromSnapshot(info.objectName, snapshot);
-		for (const entity of childEntities) {
-			for (const conflictType of conflictingTypes) {
-				expandedFootprints.push(formatFootprint(conflictType, entity.objectName, entity.columnName));
-			}
-		}
-		// all indexes in changed tables should make a conflict in this case
-		// maybe we need to make other fields optional
-		if (statement.type === 'drop_table') {
-			expandedFootprints.push(formatFootprint('create_index', statement.table, ''));
-		} else if (statement.type === 'rename_table') {
-			expandedFootprints.push(formatFootprint('create_index', statement.to, ''));
-		}
-	}
-
-	return expandedFootprints;
-}
-
-function findChildEntitiesInTableFromSnapshot(
-	tableName: string,
-	snapshot: MysqlSnapshot,
-): Array<{ objectName: string; columnName: string }> {
-	const entities: Array<{ objectName: string; columnName: string }> = [];
-
-	for (const entity of snapshot.ddl) {
-		if (entity.entityType === 'columns' && entity.table === tableName) {
-			entities.push({ objectName: entity.table, columnName: entity.name });
-		} else if (entity.entityType === 'indexes' && entity.table === tableName) {
-			entities.push({ objectName: entity.table, columnName: entity.name });
-		} else if (entity.entityType === 'pks' && entity.table === tableName) {
-			entities.push({ objectName: entity.table, columnName: entity.name });
-		} else if (entity.entityType === 'fks' && entity.table === tableName) {
-			entities.push({ objectName: entity.table, columnName: entity.name });
-		} else if (entity.entityType === 'checks' && entity.table === tableName) {
-			entities.push({ objectName: entity.table, columnName: entity.name });
-		}
-	}
-
-	return entities;
-}
-
-function findFootprintIntersections(
-	branchAHashes: Array<{ hash: string; statement: JsonStatement }>,
-	branchAConflicts: Array<{ hash: string; statement: JsonStatement }>,
-	branchBHashes: Array<{ hash: string; statement: JsonStatement }>,
-	branchBConflicts: Array<{ hash: string; statement: JsonStatement }>,
-) {
-	// const intersections: { leftStatement: string; rightStatement: string }[] = [];
-
-	for (const hashInfoA of branchAHashes) {
-		for (const conflictInfoB of branchBConflicts) {
-			if (hashInfoA.hash === conflictInfoB.hash) {
-				// Decided to return a first issue. You should run check and fix them until you have 0
-				// intersections.push({ leftStatement: hashInfoA.hash, rightStatement: conflictInfoB.hash });
-				return { leftStatement: hashInfoA.statement, rightStatement: conflictInfoB.statement };
-			}
-		}
-	}
-
-	for (const hashInfoB of branchBHashes) {
-		for (const conflictInfoA of branchAConflicts) {
-			if (hashInfoB.hash === conflictInfoA.hash) {
-				// Decided to return a first issue. You should run check and fix them until you have 0
-				// intersections.push({ leftStatement: hashInfoB.hash, rightStatement: conflictInfoA.hash });
-				return { leftStatement: hashInfoB.statement, rightStatement: conflictInfoA.statement };
-			}
-		}
-	}
-
-	// return intersections;
-}
-
-export const getReasonsFromStatements = async (
-	aStatements: JsonStatement[],
-	bStatements: JsonStatement[],
-	snapshotLeft?: MysqlSnapshot,
-	snapshotRight?: MysqlSnapshot,
-) => {
-	// const parentSnapshot = snapshot ?? drySnapshot;
-	const branchAFootprints = generateLeafFootprints(
-		aStatements,
-		snapshotLeft,
-	);
-	const branchBFootprints = generateLeafFootprints(
-		bStatements,
-		snapshotRight,
-	);
-
-	return findFootprintIntersections(
-		branchAFootprints.statementHashes,
-		branchAFootprints.conflictFootprints,
-		branchBFootprints.statementHashes,
-		branchBFootprints.conflictFootprints,
-	);
-};
-
-export const detectNonCommutative = async (
-	snapshots: string[],
-): Promise<MySQLNonCommutativityReport> => {
-	const nodes = buildSnapshotGraph<MysqlSnapshot>(snapshots);
-
-	// Build parent -> children mapping (a child can have multiple parents)
-	const prevToChildren: Record<string, string[]> = {};
-	for (const node of Object.values(nodes)) {
-		for (const parentId of node.prevIds) {
-			const arr = prevToChildren[parentId] ?? [];
-			arr.push(node.id);
-			prevToChildren[parentId] = arr;
-		}
-	}
-
-	const conflicts: BranchConflict[] = [];
-
-	for (const [prevId, childIds] of Object.entries(prevToChildren)) {
-		if (childIds.length <= 1) continue;
-
-		const parentNode = nodes[prevId];
-
-		const childToLeaves: Record<string, string[]> = {};
-		for (const childId of childIds) {
-			childToLeaves[childId] = collectLeaves(nodes, childId);
-		}
-
-		const leafStatements: Record<string, { statements: JsonStatement[]; path: string }> = {};
-		for (const leaves of Object.values(childToLeaves)) {
-			for (const leafId of leaves) {
-				const leafNode = nodes[leafId]!;
-				const parentSnapshot = parentNode ? parentNode.raw : drySnapshot;
-				const { statements } = await diff(parentSnapshot, leafNode.raw);
-				leafStatements[leafId] = { statements, path: leafNode.folderPath };
-			}
-		}
-
-		for (let i = 0; i < childIds.length; i++) {
-			for (let j = i + 1; j < childIds.length; j++) {
-				const groupA = childToLeaves[childIds[i]] ?? [];
-				const groupB = childToLeaves[childIds[j]] ?? [];
-				for (const aId of groupA) {
-					for (const bId of groupB) {
-						const aStatements = leafStatements[aId]!.statements;
-						const bStatements = leafStatements[bId]!.statements;
-
-						const parentSnapshot = parentNode ? parentNode.raw : drySnapshot;
-
-						// function that accepts statements are respond with conflicts
-						const intersectedHashed = await getReasonsFromStatements(aStatements, bStatements, parentSnapshot);
-
-						if (intersectedHashed) {
-							// parentId and parentPath is a head of a branched leaves
-							conflicts.push({
-								parentId: prevId,
-								parentPath: parentNode?.folderPath,
-								branchA: { headId: aId, path: leafStatements[aId]!.path, statement: intersectedHashed.leftStatement },
-								branchB: { headId: bId, path: leafStatements[bId]!.path, statement: intersectedHashed.rightStatement },
-							});
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Collect all leaf nodes (nodes with no children)
-	const allNodeIds = new Set(Object.keys(nodes));
-	const nodesWithChildren = new Set(Object.values(prevToChildren).flat());
-	const leafNodes = Array.from(allNodeIds).filter((id) => !nodesWithChildren.has(id));
-
-	return { conflicts, leafNodes };
-};
-
-function buildSnapshotGraph<TSnapshot extends { id: string; prevIds: string[] }>(
-	snapshotFiles: string[],
-): Record<string, SnapshotNode<TSnapshot>> {
-	const byId: Record<string, SnapshotNode<TSnapshot>> = {};
-	for (const file of snapshotFiles) {
-		if (!existsSync(file)) continue;
-		const raw = JSON.parse(readFileSync(file, 'utf8')) as TSnapshot;
-		const node: SnapshotNode<TSnapshot> = {
-			id: raw.id,
-			prevIds: raw.prevIds,
-			path: file,
-			folderPath: dirname(file),
-			raw,
+			// View operations
+			create_view: {
+				conflicts: ['create_view', 'drop_view', 'rename_view', 'alter_view'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.view.name),
+					ancestors: [],
+				}),
+			},
+			drop_view: {
+				conflicts: ['create_view', 'drop_view', 'rename_view', 'alter_view'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.name),
+					ancestors: [],
+				}),
+			},
+			rename_view: {
+				conflicts: ['create_view', 'drop_view', 'rename_view', 'alter_view'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.from),
+					ancestors: [],
+				}),
+			},
+			alter_view: {
+				conflicts: ['create_view', 'drop_view', 'rename_view', 'alter_view'],
+				buildInfo: (statement) => ({
+					primary: makeTarget(statement.view.name),
+					ancestors: [],
+				}),
+			},
 		};
-		byId[node.id] = node;
 	}
-	return byId;
-}
 
-function collectLeaves<TSnapshot extends { id: string; prevIds: string[] }>(
-	graph: Record<string, SnapshotNode<TSnapshot>>,
-	startId: string,
-): string[] {
-	const leaves: string[] = [];
-	const stack: string[] = [startId];
-	const prevToChildren: Record<string, string[]> = {};
+	protected override formatFootprintTarget(
+		action: JsonStatement['type'],
+		target: FootprintTarget,
+	): string {
+		return `${action};${target.objectName};${target.columnName}`;
+	}
 
-	// Build parent -> children mapping (a child can have multiple parents)
-	for (const node of Object.values(graph)) {
-		for (const parentId of node.prevIds) {
-			const arr = prevToChildren[parentId] ?? [];
-			arr.push(node.id);
-			prevToChildren[parentId] = arr;
+	protected override describeStatement(
+		_statement: JsonStatement,
+		info: StatementInfo,
+	): string {
+		if (this.schemaLevelActions.has(info.action)) {
+			return `${info.action}: ${info.primary.objectName} in database`;
 		}
-	}
 
-	while (stack.length) {
-		const id = stack.pop()!;
-		const children = prevToChildren[id] ?? [];
-		if (children.length === 0) {
-			leaves.push(id);
-		} else {
-			for (const c of children) stack.push(c);
+		if (info.primary.columnName) {
+			return `${info.action}: ${info.primary.columnName} on ${info.primary.objectName} table`;
 		}
+
+		return `${info.action} on ${info.primary.objectName} table`;
 	}
-	return leaves;
+
+	protected override getDrySnapshot(): MysqlSnapshot {
+		return drySnapshot;
+	}
+
+	protected override async diffSnapshots(
+		fromSnapshot: MysqlSnapshot,
+		toSnapshot: MysqlSnapshot,
+	): Promise<{ statements: JsonStatement[] }> {
+		const fromDDL: MysqlDDL = createDDL();
+		const toDDL: MysqlDDL = createDDL();
+
+		for (const e of fromSnapshot.ddl) fromDDL.entities.push(e);
+		for (const e of toSnapshot.ddl) toDDL.entities.push(e);
+
+		const { statements } = await ddlDiffDry(fromDDL, toDDL, 'default');
+		return { statements };
+	}
 }
 
-async function diff(
-	fromSnap: MysqlSnapshot | 'dry',
-	toSnap: MysqlSnapshot,
-): Promise<{ statements: JsonStatement[] }>;
-async function diff(
-	fromSnap: MysqlSnapshot,
-	toSnap: MysqlSnapshot,
-): Promise<{ statements: JsonStatement[] }>;
-async function diff(fromSnap: any, toSnap: any): Promise<{ statements: JsonStatement[] }> {
-	const fromDDL: MysqlDDL = createDDL();
-	const toDDL: MysqlDDL = createDDL();
-
-	if (fromSnap !== 'dry') {
-		for (const e of fromSnap.ddl) fromDDL.entities.push(e);
-	}
-	for (const e of toSnap.ddl) toDDL.entities.push(e);
-
-	const { statements } = await ddlDiffDry(fromDDL, toDDL, 'default');
-	return { statements };
-}
+export const mysqlCommutativity = new MysqlCommutativity();

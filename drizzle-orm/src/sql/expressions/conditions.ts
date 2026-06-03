@@ -119,7 +119,7 @@ export function and(
 
 	return new SQL([
 		new StringChunk('('),
-		sql.join(conditions, new StringChunk(' and ')),
+		sql.join(conditions.map((c) => sql`(${c})`), new StringChunk(' and ')),
 		new StringChunk(')'),
 	]);
 }
@@ -158,7 +158,7 @@ export function or(
 
 	return new SQL([
 		new StringChunk('('),
-		sql.join(conditions, new StringChunk(' or ')),
+		sql.join(conditions.map((c) => sql`(${c})`), new StringChunk(' or ')),
 		new StringChunk(')'),
 	]);
 }
@@ -175,7 +175,7 @@ export function or(
  * ```
  */
 export function not(condition: SQLWrapper): SQL {
-	return sql`not ${condition}`;
+	return is(condition, SQL) ? sql`not (${condition})` : sql`not ${condition}`;
 }
 
 /**
@@ -637,7 +637,8 @@ export function arrayContains(
 		if (values.length === 0) {
 			throw new Error('arrayContains requires at least one value');
 		}
-		const array = sql`${bindIfParam(values, column)}`;
+		const par = bindIfParam(values, column);
+		const array = sql`${Array.isArray(par) ? new Param(par) : par}`;
 		return sql`${column} @> ${array}`;
 	}
 
@@ -685,7 +686,8 @@ export function arrayContained(
 		if (values.length === 0) {
 			throw new Error('arrayContained requires at least one value');
 		}
-		const array = sql`${bindIfParam(values, column)}`;
+		const par = bindIfParam(values, column);
+		const array = sql`${Array.isArray(par) ? new Param(par) : par}`;
 		return sql`${column} <@ ${array}`;
 	}
 
@@ -732,7 +734,8 @@ export function arrayOverlaps(
 		if (values.length === 0) {
 			throw new Error('arrayOverlaps requires at least one value');
 		}
-		const array = sql`${bindIfParam(values, column)}`;
+		const par = bindIfParam(values, column);
+		const array = sql`${Array.isArray(par) ? new Param(par) : par}`;
 		return sql`${column} && ${array}`;
 	}
 

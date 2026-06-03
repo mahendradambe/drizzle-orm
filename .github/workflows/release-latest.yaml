@@ -21,13 +21,20 @@ on:
         required: true
       SQLITE_CLOUD_CONNECTION_STRING:
         required: true
+      SQLITE_MANY_CLOUD_CONNECTION_STRING:
+        required: true
+      TURBO_TOKEN: 
+        required: true
+
+env:
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: 'team_KbvYUtAn1Tqytsj8HbNcYDqV'
 
 jobs:
   test:
     strategy:
       matrix:
         shard:
-          - gel
           - planetscale
           - singlestore-core
           - singlestore-proxy
@@ -41,11 +48,8 @@ jobs:
           - drizzle-kit
           - drizzle-kit-cockroach 
           - drizzle-kit-mssql 
-          - drizzle-zod
           - drizzle-seed
-          - drizzle-typebox
-          - drizzle-valibot
-          - drizzle-arktype
+          - validators
           - other
     runs-on: ubuntu-22.04
     services:
@@ -146,12 +150,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
 
+      - uses: actions/cache@v4
+        name: Cache node_modules
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules
+
       - name: Install dependencies
         run: pnpm install
-
-      - name: Build Prisma client
-        working-directory: drizzle-orm
-        run: pnpm prisma generate --schema src/prisma/schema.prisma
 
       - name: Build
         run: pnpm build
@@ -181,10 +187,6 @@ jobs:
         working-directory: integration-tests
         run: |
           case ${{ matrix.shard }} in
-
-            gel)
-              pnpm --stream vitest --reporter=verbose --silent=false run tests/gel
-            ;;
 
             planetscale)
               pnpm --stream vitest --reporter=verbose --silent=false run \
@@ -245,13 +247,16 @@ jobs:
               pnpm --stream vitest --reporter=verbose --silent=false run tests/mssql
             ;;
 
-            drizzle-orm|drizzle-zod|drizzle-seed|drizzle-typebox|drizzle-valibot|drizzle-arktype)
+            drizzle-orm|drizzle-seed)
               (cd .. && pnpm test --filter ${{ matrix.shard }})
+            ;;
+
+            validators)
+              pnpm --stream vitest --reporter=verbose --silent=false run tests/validators
             ;;
 
             other)
               pnpm --stream vitest --reporter=verbose --silent=false run \
-                --exclude tests/gel \
                 --exclude tests/mysql/mysql-planetscale.test.ts \
                 --exclude tests/relational/mysql.planetscale-v1.test.ts \
                 --exclude tests/relational/mysql.planetscale.test.ts \
@@ -263,7 +268,8 @@ jobs:
                 --exclude tests/pg/neon-http-batch.test.ts \
                 --exclude tests/pg/neon-serverless.test.ts \
                 --exclude tests/cockroach \
-                --exclude tests/mssql
+                --exclude tests/mssql \
+                --exclude tests/validators
             ;;
 
           esac
@@ -273,11 +279,8 @@ jobs:
       matrix:
         package:
           - drizzle-kit
-          - drizzle-zod
           - drizzle-seed
           - drizzle-typebox
-          - drizzle-valibot
-          - drizzle-arktype
           - eslint-plugin-drizzle
     runs-on: ubuntu-22.04
     steps:
@@ -309,6 +312,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
 
+      - uses: actions/cache@v4
+        name: Cache node_modules
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules
+
       - name: Install dependencies
         run: pnpm install
 
@@ -332,11 +341,6 @@ jobs:
             } >> $GITHUB_OUTPUT
           fi
 
-      - name: Build Prisma client
-        if: steps.checks.outputs.has_new_release == 'true'
-        working-directory: drizzle-orm
-        run: pnpm prisma generate --schema src/prisma/schema.prisma
-
       - name: Build
         if: steps.checks.outputs.has_new_release == 'true'
         run: pnpm build
@@ -350,6 +354,8 @@ jobs:
         if: steps.checks.outputs.has_new_release == 'true'
         working-directory: ${{ matrix.package }}
         run: bun --bun run ../attw-fork/src/run.ts package.tgz
+        env:
+          ATTW_FORMAT: concise
 
 
   attw-orm:
@@ -390,6 +396,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
 
+      - uses: actions/cache@v4
+        name: Cache node_modules
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules
+
       - name: Install dependencies
         run: pnpm install
 
@@ -418,11 +430,6 @@ jobs:
             } >> $GITHUB_OUTPUT
           fi
 
-      - name: Build Prisma client
-        if: steps.checks.outputs.has_new_release == 'true'
-        working-directory: drizzle-orm
-        run: pnpm prisma generate --schema src/prisma/schema.prisma
-
       - name: Build
         if: steps.checks.outputs.has_new_release == 'true'
         run: pnpm build
@@ -436,11 +443,13 @@ jobs:
         if: steps.checks.outputs.has_new_release == 'true'
         working-directory: drizzle-orm
         run: bun --bun run ../attw-fork/src/run.ts package.tgz ${{ matrix.shard }}
+        env:
+          ATTW_FORMAT: concise
 
   release:
     permissions:
-      contents: read
-      id-token: write
+      contents: write # for creating GitHub releases
+      id-token: write # for OIDC
     needs:
       - test
       - attw
@@ -451,11 +460,7 @@ jobs:
         package:
           - drizzle-orm
           - drizzle-kit
-          - drizzle-zod
           - drizzle-seed
-          - drizzle-typebox
-          - drizzle-valibot
-          - drizzle-arktype
           - eslint-plugin-drizzle
     runs-on: ubuntu-22.04
     steps:
@@ -485,6 +490,12 @@ jobs:
           key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
+
+      - uses: actions/cache@v4
+        name: Cache node_modules
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules
 
       - name: Install dependencies
         run: pnpm install
@@ -519,11 +530,6 @@ jobs:
             echo "Already up to date: $version"
             echo "\`$version\` is already latest on NPM" >> $GITHUB_STEP_SUMMARY
           fi
-
-      - name: Build Prisma client
-        if: steps.checks.outputs.has_new_release == 'true'
-        working-directory: drizzle-orm
-        run: pnpm prisma generate --schema src/prisma/schema.prisma
 
       - name: Build
         if: steps.checks.outputs.has_new_release == 'true'

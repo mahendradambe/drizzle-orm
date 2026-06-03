@@ -1,4 +1,3 @@
-import type { ColumnBaseConfig } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import type { PgTable } from '~/pg-core/table.ts';
 import { type Equal, getColumnNameAndConfig } from '~/utils.ts';
@@ -29,8 +28,11 @@ export class PgNumericBuilder extends PgColumnBuilder<
 	}
 }
 
-export class PgNumeric<T extends ColumnBaseConfig<'string numeric'>> extends PgColumn<T> {
+export class PgNumeric extends PgColumn<'string numeric'> {
 	static override readonly [entityKind]: string = 'PgNumeric';
+
+	/** @internal */
+	override readonly codec = 'numeric';
 
 	readonly precision: number | undefined;
 	readonly scale: number | undefined;
@@ -39,12 +41,6 @@ export class PgNumeric<T extends ColumnBaseConfig<'string numeric'>> extends PgC
 		super(table, config);
 		this.precision = config.precision;
 		this.scale = config.scale;
-	}
-
-	override mapFromDriverValue(value: unknown): string {
-		if (typeof value === 'string') return value;
-
-		return String(value);
 	}
 
 	getSQLType(): string {
@@ -86,8 +82,11 @@ export class PgNumericNumberBuilder extends PgColumnBuilder<
 	}
 }
 
-export class PgNumericNumber<T extends ColumnBaseConfig<'number'>> extends PgColumn<T> {
+export class PgNumericNumber extends PgColumn<'number'> {
 	static override readonly [entityKind]: string = 'PgNumericNumber';
+
+	/** @internal */
+	override readonly codec = 'numeric:number';
 
 	readonly precision: number | undefined;
 	readonly scale: number | undefined;
@@ -96,12 +95,6 @@ export class PgNumericNumber<T extends ColumnBaseConfig<'number'>> extends PgCol
 		super(table, config);
 		this.precision = config.precision;
 		this.scale = config.scale;
-	}
-
-	override mapFromDriverValue(value: unknown): number {
-		if (typeof value === 'number') return value;
-
-		return Number(value);
 	}
 
 	override mapToDriverValue = String;
@@ -145,8 +138,11 @@ export class PgNumericBigIntBuilder extends PgColumnBuilder<
 	}
 }
 
-export class PgNumericBigInt<T extends ColumnBaseConfig<'bigint int64'>> extends PgColumn<T> {
+export class PgNumericBigInt extends PgColumn<'bigint int64'> {
 	static override readonly [entityKind]: string = 'PgNumericBigInt';
+
+	/** @internal */
+	override readonly codec = 'numeric:bigint';
 
 	readonly precision: number | undefined;
 	readonly scale: number | undefined;
@@ -156,8 +152,6 @@ export class PgNumericBigInt<T extends ColumnBaseConfig<'bigint int64'>> extends
 		this.precision = config.precision;
 		this.scale = config.scale;
 	}
-
-	override mapFromDriverValue = BigInt;
 
 	override mapToDriverValue = String;
 

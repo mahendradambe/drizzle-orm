@@ -1,5 +1,6 @@
 import { useEffect, useReducer } from 'react';
-import { formatToMillis, type MigrationMeta } from '~/migrator.ts';
+import type { MigrationMeta } from '~/migrator.ts';
+import { formatToMillis } from '~/migrator.utils.ts';
 import type { AnyRelations } from '~/relations.ts';
 import type { OPSQLiteDatabase } from './driver.ts';
 
@@ -30,6 +31,7 @@ async function readMigrationFiles({ migrations }: MigrationConfig): Promise<Migr
 				bps: true,
 				folderMillis: migrationDate,
 				hash: '',
+				name: key,
 			});
 		} catch {
 			throw new Error(`Failed to parse migration: ${key}`);
@@ -44,7 +46,7 @@ export async function migrate<TSchema extends Record<string, unknown>, TRelation
 	config: MigrationConfig,
 ) {
 	const migrations = await readMigrationFiles(config);
-	return await db.dialect.migrate(migrations, db.session);
+	return await db.dialect.migrate(migrations, db);
 }
 
 interface State {

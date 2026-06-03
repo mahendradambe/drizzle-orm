@@ -4,17 +4,16 @@ import { entityKind } from '~/entity.ts';
 import type { MySqlDialect } from '~/mysql-core/dialect.ts';
 import type {
 	AnyMySqlQueryResultHKT,
+	MySqlPreparedQuery,
 	MySqlPreparedQueryConfig,
 	MySqlQueryResultHKT,
 	MySqlQueryResultKind,
 	MySqlSession,
-	PreparedQueryHKTBase,
-	PreparedQueryKind,
 } from '~/mysql-core/session.ts';
 import type { MySqlTable } from '~/mysql-core/table.ts';
 import { QueryPromise } from '~/query-promise.ts';
 import { SelectionProxyHandler } from '~/selection-proxy.ts';
-import type { Placeholder, Query, SQL, SQLWrapper } from '~/sql/sql.ts';
+import { type Placeholder, type Query, type SQL, sql, type SqlCommenterInput, type SQLWrapper } from '~/sql/sql.ts';
 import type { Subquery } from '~/subquery.ts';
 import { type InferInsertModel, Table } from '~/table.ts';
 import { mapUpdateSet, type UpdateSet, type ValueOrArray } from '~/utils.ts';
@@ -30,6 +29,7 @@ export interface MySqlUpdateConfig {
 	table: MySqlTable;
 	returning?: SelectedFieldsOrdered;
 	withList?: Subquery[];
+	comment?: SQL;
 }
 
 export type MySqlUpdateSetSource<
@@ -40,6 +40,7 @@ export type MySqlUpdateSetSource<
 		[Key in keyof TModel & string]?:
 			| GetColumnData<TTable['_']['columns'][Key], 'query'>
 			| SQL
+			| Placeholder
 			| undefined;
 	}
 	& {};
@@ -47,7 +48,6 @@ export type MySqlUpdateSetSource<
 export class MySqlUpdateBuilder<
 	TTable extends MySqlTable,
 	TQueryResult extends MySqlQueryResultHKT,
-	TPreparedQueryHKT extends PreparedQueryHKTBase,
 > {
 	static readonly [entityKind]: string = 'MySqlUpdateBuilder';
 
@@ -62,7 +62,7 @@ export class MySqlUpdateBuilder<
 		private withList?: Subquery[],
 	) {}
 
-	set(values: MySqlUpdateSetSource<TTable>): MySqlUpdateBase<TTable, TQueryResult, TPreparedQueryHKT> {
+	set(values: MySqlUpdateSetSource<TTable>): MySqlUpdateBase<TTable, TQueryResult> {
 		return new MySqlUpdateBase(this.table, mapUpdateSet(this.table, values), this.session, this.dialect, this.withList);
 	}
 }
@@ -75,47 +75,40 @@ export type MySqlUpdateWithout<
 	MySqlUpdateBase<
 		T['_']['table'],
 		T['_']['queryResult'],
-		T['_']['preparedQueryHKT'],
 		TDynamic,
 		T['_']['excludedMethods'] | K
 	>,
 	T['_']['excludedMethods'] | K
 >;
 
-export type MySqlUpdatePrepare<T extends AnyMySqlUpdateBase> = PreparedQueryKind<
-	T['_']['preparedQueryHKT'],
+export type MySqlUpdatePrepare<T extends AnyMySqlUpdateBase> = MySqlPreparedQuery<
 	MySqlPreparedQueryConfig & {
 		execute: MySqlQueryResultKind<T['_']['queryResult'], never>;
 		iterator: never;
-	},
-	true
+	}
 >;
 
 export type MySqlUpdateDynamic<T extends AnyMySqlUpdateBase> = MySqlUpdate<
 	T['_']['table'],
-	T['_']['queryResult'],
-	T['_']['preparedQueryHKT']
+	T['_']['queryResult']
 >;
 
 export type MySqlUpdate<
 	TTable extends MySqlTable = MySqlTable,
 	TQueryResult extends MySqlQueryResultHKT = AnyMySqlQueryResultHKT,
-	TPreparedQueryHKT extends PreparedQueryHKTBase = PreparedQueryHKTBase,
-> = MySqlUpdateBase<TTable, TQueryResult, TPreparedQueryHKT, true, never>;
+> = MySqlUpdateBase<TTable, TQueryResult, true, never>;
 
-export type AnyMySqlUpdateBase = MySqlUpdateBase<any, any, any, any, any>;
+export type AnyMySqlUpdateBase = MySqlUpdateBase<any, any, any, any>;
 
 export interface MySqlUpdateBase<
 	TTable extends MySqlTable,
 	TQueryResult extends MySqlQueryResultHKT,
-	TPreparedQueryHKT extends PreparedQueryHKTBase,
 	TDynamic extends boolean = false,
 	TExcludedMethods extends string = never,
 > extends QueryPromise<MySqlQueryResultKind<TQueryResult, never>>, SQLWrapper {
 	readonly _: {
 		readonly table: TTable;
 		readonly queryResult: TQueryResult;
-		readonly preparedQueryHKT: TPreparedQueryHKT;
 		readonly dynamic: TDynamic;
 		readonly excludedMethods: TExcludedMethods;
 	};
@@ -124,8 +117,6 @@ export interface MySqlUpdateBase<
 export class MySqlUpdateBase<
 	TTable extends MySqlTable,
 	TQueryResult extends MySqlQueryResultHKT,
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	TPreparedQueryHKT extends PreparedQueryHKTBase,
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	TDynamic extends boolean = false,
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -216,23 +207,28 @@ export class MySqlUpdateBase<
 		return this as any;
 	}
 
+	/**
+	 * Attach [sqlcommenter](https://google.github.io/sqlcommenter) comment to a query
+	 */
+	comment(comment: SqlCommenterInput): MySqlUpdateWithout<this, TDynamic, 'comment'> {
+		this.config.comment = sql.comment(comment);
+		return this as any;
+	}
+
 	/** @internal */
 	getSQL(): SQL {
 		return this.dialect.buildUpdateQuery(this.config);
 	}
 
 	toSQL(): Query {
-		const { typings: _typings, ...rest } = this.dialect.sqlToQuery(this.getSQL());
-		return rest;
+		return this.dialect.sqlToQuery(this.getSQL());
 	}
 
 	prepare(): MySqlUpdatePrepare<this> {
 		return this.session.prepareQuery(
 			this.dialect.sqlToQuery(this.getSQL()),
-			undefined,
-			undefined,
-			undefined,
-			this.config.returning,
+			'raw',
+			this.dialect.mapperGenerators.$returning(this.config.returning, undefined),
 			{
 				type: 'insert',
 				tables: extractUsedTable(this.config.table),

@@ -1,4 +1,3 @@
-import type { ColumnBaseConfig } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import type { PgTable } from '~/pg-core/table.ts';
 import { PgColumn, PgColumnBuilder } from './common.ts';
@@ -20,8 +19,11 @@ export class PgBooleanBuilder extends PgColumnBuilder<{
 	}
 }
 
-export class PgBoolean<T extends ColumnBaseConfig<'boolean'>> extends PgColumn<T> {
+export class PgBoolean extends PgColumn<'boolean'> {
 	static override readonly [entityKind]: string = 'PgBoolean';
+
+	/** @internal */
+	override readonly codec = 'bool';
 
 	getSQLType(): string {
 		return 'boolean';

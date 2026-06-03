@@ -7,16 +7,16 @@ import { migrate as pgMigrator } from './postgres/migrator.ts';
 import type { BunSQLiteDatabase } from './sqlite/driver.ts';
 import { migrate as sqliteMigrator } from './sqlite/migrator.ts';
 
-export async function migrate<TSchema extends Record<string, unknown>, TRelations extends AnyRelations>(
-	db: BunSQLDatabase<TSchema, TRelations>,
+export async function migrate<TRelations extends AnyRelations>(
+	db: BunSQLDatabase<TRelations>,
 	config: MigrationConfig,
 ) {
 	return pgMigrator(db, config);
 }
 
 export namespace migrate {
-	export async function postgres<TSchema extends Record<string, unknown>, TRelations extends AnyRelations>(
-		db: BunSQLDatabase<TSchema, TRelations>,
+	export async function postgres<TRelations extends AnyRelations>(
+		db: BunSQLDatabase<TRelations>,
 		config: MigrationConfig,
 	) {
 		return pgMigrator(db, config);
@@ -29,8 +29,8 @@ export namespace migrate {
 		return sqliteMigrator(db, config);
 	}
 
-	export async function mysql<TSchema extends Record<string, unknown>, TRelations extends AnyRelations>(
-		db: BunMySqlDatabase<TSchema, TRelations>,
+	export async function mysql<TRelations extends AnyRelations>(
+		db: BunMySqlDatabase<TRelations>,
 		config: MigrationConfig,
 	) {
 		return mysqlMigrator(db, config);

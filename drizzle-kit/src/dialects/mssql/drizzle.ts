@@ -1,4 +1,3 @@
-import type { Casing } from 'drizzle-orm';
 import { getTableName, is, SQL } from 'drizzle-orm';
 import { Relations } from 'drizzle-orm/_relations';
 import type { AnyMsSqlColumn, AnyMsSqlTable } from 'drizzle-orm/mssql-core';
@@ -11,9 +10,8 @@ import {
 	MsSqlTable,
 	MsSqlView,
 } from 'drizzle-orm/mssql-core';
-import type { CasingType } from 'src/cli/validations/common';
-import { safeRegister } from 'src/utils/utils-node';
-import { getColumnCasing, sqlToStr } from '../drizzle';
+import { loadModule } from 'src/utils/utils-node';
+import { sqlToStr } from '../drizzle';
 import type { EntityFilter } from '../pull-utils';
 import type { DefaultConstraint, InterimSchema, MssqlEntities, Schema, SchemaError } from './ddl';
 import { defaultNameForDefault, defaultNameForFK, defaultNameForPK, defaultNameForUnique, typeFor } from './grammar';
@@ -25,7 +23,6 @@ export const upper = <T extends string>(value: T | undefined): Uppercase<T> | nu
 
 export const defaultFromColumn = (
 	column: AnyMsSqlColumn,
-	casing?: Casing,
 ): DefaultConstraint['default'] | null => {
 	if (typeof column.default === 'undefined') return null;
 	const def = column.default;
@@ -34,7 +31,7 @@ export const defaultFromColumn = (
 
 	if (is(def, SQL)) {
 		// extra wrapping
-		const str = sqlToStr(def, casing);
+		const str = sqlToStr(def);
 		if (!str.startsWith('(')) return `(${str})`;
 
 		return str;
@@ -52,10 +49,9 @@ export const fromDrizzleSchema = (
 		tables: AnyMsSqlTable[];
 		views: MsSqlView[];
 	},
-	casing: CasingType | undefined,
 	filter: EntityFilter,
 ): { schema: InterimSchema; errors: SchemaError[] } => {
-	const dialect = new MsSqlDialect({ casing });
+	const dialect = new MsSqlDialect();
 	const errors: SchemaError[] = [];
 
 	const schemas = schema.schemas
@@ -113,7 +109,7 @@ export const fromDrizzleSchema = (
 		}
 
 		for (const pk of primaryKeys) {
-			const columnNames = pk.columns.map((c: any) => getColumnCasing(c, casing));
+			const columnNames = pk.columns.map((c: any) => c.name);
 
 			const name = pk.name || defaultNameForPK(tableName);
 
@@ -128,10 +124,14 @@ export const fromDrizzleSchema = (
 		}
 
 		for (const column of columns) {
-			const columnName = getColumnCasing(column, casing);
+			const columnName = column.name;
 
-			const isPk = result.pks.find((it) => it.columns.includes(columnName));
-			const notNull: boolean = column.notNull || Boolean(column.generated) || Boolean(isPk);
+			const isPk = result.pks.find((it) =>
+				it.columns.includes(columnName) && it.table === tableName && it.schema === schema
+			) !== undefined;
+
+			// if column is part of composite primary key, it is implicitly not null in db
+			const notNull: boolean = column.notNull || Boolean(isPk);
 
 			// @ts-expect-error
 			// Drizzle ORM gives this value in runtime, but not in types.
@@ -185,14 +185,14 @@ export const fromDrizzleSchema = (
 					schema,
 					column: columnName,
 					table: tableName,
-					default: defaultFromColumn(column, casing),
+					default: defaultFromColumn(column),
 				});
 			}
 		}
 
 		for (const unique of uniqueConstraints) {
 			const columns = unique.columns.map((c) => {
-				return getColumnCasing(c, casing);
+				return c.name;
 			});
 
 			const name = unique.name ?? defaultNameForUnique(tableName, unique.columns.map((c) => c.name));
@@ -215,21 +215,10 @@ export const fromDrizzleSchema = (
 			// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 			const tableTo = getTableName(referenceFT);
 
-			const originalColumnsFrom = reference.columns.map((it) => it.name);
-			const columnsFrom = reference.columns.map((it) => getColumnCasing(it, casing));
-			const originalColumnsTo = reference.foreignColumns.map((it) => it.name);
-			const columnsTo = reference.foreignColumns.map((it) => getColumnCasing(it, casing));
+			const columnsFrom = reference.columns.map((it) => it.name);
+			const columnsTo = reference.foreignColumns.map((it) => it.name);
 
 			let name = fk.getName() || defaultNameForFK(tableName, columnsFrom, tableTo, columnsTo);
-			if (casing !== undefined) {
-				for (let i = 0; i < originalColumnsFrom.length; i++) {
-					name = name.replace(originalColumnsFrom[i], columnsFrom[i]);
-				}
-				for (let i = 0; i < originalColumnsTo.length; i++) {
-					name = name.replace(originalColumnsTo[i], columnsTo[i]);
-				}
-			}
-
 			result.fks.push({
 				entityType: 'fks',
 				table: tableName,
@@ -250,6 +239,8 @@ export const fromDrizzleSchema = (
 			const name = index.config.name;
 
 			for (const column of columns) {
+				// TODO index names are required, why this is here?
+				// potentially can be removed
 				if (is(column, SQL) && !index.config.name) {
 					errors.push({
 						type: 'index_no_name',
@@ -261,7 +252,7 @@ export const fromDrizzleSchema = (
 				}
 			}
 
-			let where = index.config.where ? dialect.sqlToQuery(index.config.where).sql : '';
+			let where = index.config.where ? dialect.sqlToQuery(index.config.where, 'indexes').sql : '';
 			where = where === 'true' ? '' : where;
 
 			result.indexes.push({
@@ -274,7 +265,7 @@ export const fromDrizzleSchema = (
 						const sql = dialect.sqlToQuery(it, 'indexes').sql;
 						return { value: sql, isExpression: true };
 					} else {
-						return { value: getColumnCasing(it, casing), isExpression: false };
+						return { value: it.name, isExpression: false };
 					}
 				}),
 				isUnique: index.config.unique ?? false,
@@ -296,7 +287,21 @@ export const fromDrizzleSchema = (
 		}
 	}
 
-	for (const view of schema.views) {
+	for (
+		// see in "./dialects/postgres/drizzle.ts" for more
+		const view of schema.views.sort((a, b) => {
+			const aConfig = getViewConfig(a);
+			const bConfig = getViewConfig(b);
+
+			// If a's fields include b, a depends on b → b comes first
+			if (aConfig.query?.queryChunks.includes(b)) return 1;
+
+			// If b's fields include a, b depends on a → a comes first
+			if (bConfig.query?.queryChunks.includes(a)) return -1;
+
+			return 0;
+		})
+	) {
 		const cfg = getViewConfig(view);
 		const {
 			isExisting,
@@ -353,19 +358,17 @@ export const prepareFromSchemaFiles = async (imports: string[]) => {
 	const views: MsSqlView[] = [];
 	const relations: Relations[] = [];
 
-	await safeRegister(async () => {
-		for (let i = 0; i < imports.length; i++) {
-			const it = imports[i];
+	for (let i = 0; i < imports.length; i++) {
+		const it = imports[i];
 
-			const i0: Record<string, unknown> = require(`${it}`);
-			const prepared = fromExport(i0);
+		const i0: Record<string, unknown> = await loadModule(it);
+		const prepared = fromExport(i0);
 
-			tables.push(...prepared.tables);
-			schemas.push(...prepared.schemas);
-			views.push(...prepared.views);
-			relations.push(...prepared.relations);
-		}
-	});
+		tables.push(...prepared.tables);
+		schemas.push(...prepared.schemas);
+		views.push(...prepared.views);
+		relations.push(...prepared.relations);
+	}
 
 	return {
 		tables,

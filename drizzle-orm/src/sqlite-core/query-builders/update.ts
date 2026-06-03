@@ -45,6 +45,7 @@ export type SQLiteUpdateSetSource<
 			| GetColumnData<TTable['_']['columns'][Key], 'query'>
 			| SQL
 			| SQLiteColumn
+			| Placeholder
 			| undefined;
 	}
 	& {};
@@ -419,8 +420,7 @@ export class SQLiteUpdateBase<
 	}
 
 	toSQL(): Query {
-		const { typings: _typings, ...rest } = this.dialect.sqlToQuery(this.getSQL());
-		return rest;
+		return this.dialect.sqlToQuery(this.getSQL());
 	}
 
 	/** @internal */
@@ -429,7 +429,6 @@ export class SQLiteUpdateBase<
 			this.dialect.sqlToQuery(this.getSQL()),
 			this.config.returning,
 			this.config.returning ? 'all' : 'run',
-			true,
 			undefined,
 			{
 				type: 'insert',

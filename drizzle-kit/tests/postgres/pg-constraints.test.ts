@@ -1,4 +1,4 @@
-import { and, isNull, SQL, sql } from 'drizzle-orm';
+import { and, desc, isNull, SQL, sql } from 'drizzle-orm';
 import {
 	AnyPgColumn,
 	bigint,
@@ -1407,8 +1407,9 @@ test('pk multistep #4', async () => {
 	expect(pst3).toStrictEqual([]);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/3380
 // https://github.com/drizzle-team/drizzle-orm/issues/3189
-test('pk multistep #5', async () => {
+test('composite pk multistep #1', async () => {
 	const table1 = pgTable('table1', {
 		id: text('id').notNull(),
 		dbtProjectId: text('dbt_project_id').notNull(),
@@ -1695,6 +1696,114 @@ test('add column with pk to table where was no pk', async (t) => {
 	const expectedSt2 = [
 		`ALTER TABLE "users" ADD COLUMN "age" bigint;`,
 		`ALTER TABLE "users" ADD PRIMARY KEY ("age");`,
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/1144#issuecomment-1960807398
+test('rename table with composite pk', async () => {
+	const users = pgTable('users', {
+		id: text('id').primaryKey(),
+		fullName: text('full_name'),
+		email: text('email').unique().notNull(),
+		phone: text('phone'),
+		hashedPassword: text('hashed_password'),
+		updatedAt: timestamp('updated_at').notNull().defaultNow(),
+		createdAt: timestamp('created_at').notNull().defaultNow(),
+	});
+
+	const session = pgTable('session', {
+		id: text('id').primaryKey(),
+		userId: text('user_id')
+			.notNull()
+			.references(() => users.id),
+		expiresAt: timestamp('expires_at', {
+			withTimezone: true,
+			mode: 'date',
+		}).notNull(),
+	});
+
+	const oauthAccount = pgTable(
+		'oauth_account',
+		{
+			providerId: text('provider_id').notNull(),
+			providerUserId: text('provider_user_id').notNull(),
+			userId: text('user_id')
+				.notNull()
+				.references(() => users.id),
+			createdAt: timestamp('created_at', {
+				withTimezone: true,
+				mode: 'date',
+			})
+				.notNull()
+				.defaultNow(),
+		},
+		(table) => {
+			return {
+				pk: primaryKey({ columns: [table.providerId, table.userId] }),
+			};
+		},
+	);
+
+	const schema1 = { oauthAccount, session, users };
+
+	const { next: n1 } = await diff({}, schema1, []);
+	await push({ db, to: schema1 });
+
+	const user = pgTable('users', {
+		id: text('id').primaryKey(),
+		fullName: text('full_name'),
+		email: text('email').unique().notNull(),
+		phone: text('phone'),
+		hashedPassword: text('hashed_password'),
+		updatedAt: timestamp('updated_at').notNull().defaultNow(),
+		createdAt: timestamp('created_at').notNull().defaultNow(),
+	});
+
+	const session2 = pgTable('sessions', {
+		id: text('id').primaryKey(),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id),
+		expiresAt: timestamp('expires_at', {
+			withTimezone: true,
+			mode: 'date',
+		}).notNull(),
+	});
+
+	const oauthAccount2 = pgTable(
+		'oauth_accounts',
+		{
+			providerId: text('provider_id').notNull(),
+			providerUserId: text('provider_user_id').notNull(),
+			userId: text('user_id')
+				.notNull()
+				.references(() => user.id),
+			createdAt: timestamp('created_at', {
+				withTimezone: true,
+				mode: 'date',
+			})
+				.notNull()
+				.defaultNow(),
+		},
+		(table) => [primaryKey({ columns: [table.providerId, table.userId] })],
+	);
+
+	const schema2 = { user, session2, oauthAccount2 };
+
+	const { sqlStatements: st2 } = await diff(n1, schema2, [
+		'public.oauth_account->public.oauth_accounts',
+		'public.session->public.sessions',
+	]);
+	const { sqlStatements: pst2 } = await push({
+		db,
+		to: schema2,
+		renames: ['public.oauth_account->public.oauth_accounts', 'public.session->public.sessions'],
+	});
+	const expectedSt2 = [
+		'ALTER TABLE "oauth_account" RENAME TO "oauth_accounts";',
+		'ALTER TABLE "session" RENAME TO "sessions";',
 	];
 	expect(st2).toStrictEqual(expectedSt2);
 	expect(pst2).toStrictEqual(expectedSt2);
@@ -2310,7 +2419,7 @@ test('generated + unique', async (t) => {
 	expect(st).toStrictEqual([
 		`ALTER TABLE \"table\" RENAME COLUMN \"column2\" TO \"column3\";`,
 		`ALTER TABLE \"table\" DROP COLUMN \"bool\";`,
-		`ALTER TABLE \"table\" ADD COLUMN \"bool\" boolean GENERATED ALWAYS AS (((\"table\".\"column1\" is null) and (\"table\".\"column3\" is null))) STORED;`,
+		`ALTER TABLE \"table\" ADD COLUMN \"bool\" boolean GENERATED ALWAYS AS ((((\"table\".\"column1\" is null)) and ((\"table\".\"column3\" is null)))) STORED;`,
 		'ALTER TABLE "table" ADD CONSTRAINT "table_bool_key" UNIQUE("bool");',
 	]);
 	// push is not triggered on generated change
@@ -2358,7 +2467,7 @@ test('generated + pk', async (t) => {
 	expect(st).toStrictEqual([
 		`ALTER TABLE \"table\" RENAME COLUMN \"column2\" TO \"column3\";`,
 		`ALTER TABLE \"table\" DROP COLUMN \"bool\";`,
-		`ALTER TABLE \"table\" ADD COLUMN \"bool\" boolean PRIMARY KEY GENERATED ALWAYS AS (((\"table\".\"column1\" is null) and (\"table\".\"column3\" is null))) STORED;`,
+		`ALTER TABLE \"table\" ADD COLUMN \"bool\" boolean PRIMARY KEY GENERATED ALWAYS AS ((((\"table\".\"column1\" is null)) and ((\"table\".\"column3\" is null)))) STORED;`,
 	]);
 	// push is not triggered on generated change
 	expect(pst).toStrictEqual([
@@ -2409,6 +2518,7 @@ test('drop column with pk and add pk to another column #1', async () => {
 	expect(pst2).toStrictEqual(expectedSt2);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/4645
 // https://github.com/drizzle-team/drizzle-orm/issues/3280
 test('fk name is too long', async () => {
 	const table1 = pgTable(
@@ -2464,4 +2574,127 @@ test('enums in check', async () => {
 		'CREATE TABLE "table" (\n\t"unit" text,\n\tCONSTRAINT "unit_valid" CHECK ("unit" in (\'kg\', \'lb\'))\n);\n',
 	]);
 	expect(res2.sqlStatements).toStrictEqual([]);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/3844
+// https://github.com/drizzle-team/drizzle-orm/issues/3103
+test('composite pk multistep #2', async () => {
+	const userAsyncTasks = pgTable('userAsyncTask', {
+		userId: text('userId').notNull(),
+		identifier: text('identifier').notNull(),
+		type: text('type').notNull(),
+	}, (t) => [
+		primaryKey({ columns: [t.identifier, t.userId, t.type] }),
+	]);
+	const schema = { userAsyncTasks };
+
+	const { next: n1 } = await diff({}, schema, []);
+	await push({ db, to: schema });
+
+	const { sqlStatements: st2 } = await diff(n1, schema, []);
+	const { sqlStatements: pst2 } = await push({ db, to: schema });
+	expect(st2).toStrictEqual([]);
+	expect(pst2).toStrictEqual([]);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/4471
+test('composite pk multistep #3', async () => {
+	const firstToSecondTable = pgTable(
+		'firstToSecond',
+		{
+			firstId: integer('firstId'),
+			secondId: integer('secondId'),
+		},
+		(table) => [primaryKey({ columns: [table.firstId, table.secondId] })],
+	);
+
+	const schema = { firstToSecondTable };
+
+	const { next: n1 } = await diff({}, schema, []);
+	await push({ db, to: schema });
+
+	const { sqlStatements: st2 } = await diff(n1, schema, []);
+	const { sqlStatements: pst2 } = await push({ db, to: schema });
+	expect(st2).toStrictEqual([]);
+	expect(pst2).toStrictEqual([]);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5156
+test('not null', async () => {
+	const table1 = pgTable('table1', {
+		col1: integer().primaryKey(),
+		col2: integer().notNull(),
+		col3: integer(),
+	}, (table) => [
+		// this works too
+		// check('table1_col3_not_null', sql`col3 IS NOT NULL`),
+		check('table1_col3_not_null', sql`${table.col3} IS NOT NULL`),
+	]);
+
+	const schema = { table1 };
+	const { next: n1 } = await diff({}, schema, []);
+	await push({ db, to: schema });
+
+	const { sqlStatements: st2 } = await diff(n1, schema, []);
+	const { sqlStatements: pst2 } = await push({ db, to: schema });
+	expect(st2).toStrictEqual([]);
+	expect(pst2).toStrictEqual([]);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/4704
+test('issue No4704. Composite index with sort outputs', async () => {
+	const schema1 = {
+		table: pgTable(
+			'table',
+			{ col1: integer(), col2: integer(), col3: integer() },
+			(table) => [
+				index('table_composite_idx').on(
+					table.col1,
+					table.col2,
+					desc(table.col3), // Attempting to sort by col3 DESC
+				),
+			],
+		),
+	};
+
+	const { sqlStatements: st1, next: n1 } = await diff({}, schema1, []);
+	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
+	const expectedSt1 = [
+		'CREATE TABLE "table" (\n\t"col1" integer,\n\t"col2" integer,\n\t"col3" integer\n);\n',
+		'CREATE INDEX "table_composite_idx" ON "table" ("col1","col2","col3" desc);',
+	];
+	expect(st1).toStrictEqual(expectedSt1);
+	expect(pst1).toStrictEqual(expectedSt1);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5585
+test('Issue No5585. Alter unique constraint', async () => {
+	const from = {
+		table: pgTable(
+			'table',
+			{ col1: integer(), col2: integer(), col3: integer() },
+			(table) => [unique('table_unique').on(table.col1)],
+		),
+	};
+
+	const to = {
+		table: pgTable(
+			'table',
+			{ col1: integer(), col2: integer(), col3: integer() },
+			(table) => [unique('table_unique').on(table.col1).nullsNotDistinct()],
+		),
+	};
+
+	await push({ db, to: from });
+
+	const { sqlStatements: st1, next: n1 } = await diff(from, to, []);
+	const { sqlStatements: pst1 } = await push({ db, to: to });
+
+	const expectedSt1 = [
+		'ALTER TABLE "table" DROP CONSTRAINT "table_unique";',
+		'ALTER TABLE "table" ADD CONSTRAINT "table_unique" UNIQUE NULLS NOT DISTINCT("col1");',
+	];
+
+	expect(st1).toStrictEqual(expectedSt1);
+	expect(pst1).toStrictEqual(expectedSt1);
 });

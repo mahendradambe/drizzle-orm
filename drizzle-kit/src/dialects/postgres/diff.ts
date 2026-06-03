@@ -1,6 +1,7 @@
-import { parse, stringify } from 'src/utils/when-json-met-bigint';
+import { parse } from 'src/utils/when-json-met-bigint';
 import { prepareMigrationRenames, trimChar } from '../../utils';
 import { mockResolver } from '../../utils/mocks';
+import { deepStrictEqual } from '../../utils/node-assert/deep-strict-equal';
 import { diffStringArrays } from '../../utils/sequence-matcher';
 import type { Resolver } from '../common';
 import { diff } from '../dialect';
@@ -743,11 +744,20 @@ export const ddlDiff = async (
 				|| (it.$left.type === 'jsonb' && it.$right.type === 'jsonb'))
 		) {
 			if (it.default.from !== null && it.default.to !== null) {
-				const left = stringify(parse(trimChar(it.default.from, "'")));
-				const right = stringify(parse(trimChar(it.default.to, "'")));
-				if (left === right) {
+				const parsedLeft = parse(trimChar(it.default.from, "'"));
+				const parsedRight = parse(trimChar(it.default.to, "'"));
+
+				try {
+					deepStrictEqual(parsedLeft, parsedRight);
 					delete it.default;
-				}
+				} catch {}
+
+				// const left = stringify(parsedLeft);
+				// const right = stringify(parsedRight);
+
+				// if (left === right) {
+				// 	delete it.default;
+				// }
 			}
 		}
 
@@ -841,6 +851,14 @@ export const ddlDiff = async (
 	const jsonDropCheckConstraints = checkDeletes.filter(tablesFilter('deleted')).map((it) =>
 		prepareStatement('drop_check', { check: it })
 	);
+	const jsonRenamedCheckConstraints = checkRenames.map((it) =>
+		prepareStatement('rename_constraint', {
+			schema: it.to.schema,
+			table: it.to.table,
+			from: it.from.name,
+			to: it.to.name,
+		})
+	);
 
 	// group by tables?
 	const alteredPKs = alters.filter((it) => it.entityType === 'pks').filter((it) => {
@@ -855,13 +873,7 @@ export const ddlDiff = async (
 	});
 
 	const jsonRecreateFKs = alters.filter((it) => it.entityType === 'fks').filter((x) => {
-		if (
-			x.nameExplicit
-			&& ((mode === 'push' && x.nameExplicit.from && !x.nameExplicit.to)
-				|| x.nameExplicit.to && !x.nameExplicit.from)
-		) {
-			delete x.nameExplicit;
-		}
+		if (x.nameExplicit) delete x.nameExplicit;
 
 		return ddl2.fks.hasDiff(x);
 	}).map((it) => prepareStatement('recreate_fk', { fk: it.$right, diff: it }));
@@ -1051,6 +1063,7 @@ export const ddlDiff = async (
 		.map((it) => {
 			const column = it.$right;
 			const wasSerial = isSerialType(it.$left.type);
+			const toSerial: boolean = !isSerialType(it.$left.type) && isSerialType(it.$right.type);
 			const isEnum = ddl2.enums.one({ schema: column.typeSchema ?? 'public', name: column.type }) !== null;
 			const wasEnum =
 				(it.type && ddl1.enums.one({ schema: column.typeSchema ?? 'public', name: it.type.from }) !== null)
@@ -1062,6 +1075,7 @@ export const ddlDiff = async (
 				isEnum,
 				wasEnum,
 				wasSerial,
+				toSerial,
 			});
 		});
 
@@ -1113,7 +1127,10 @@ export const ddlDiff = async (
 		// default access method
 		// from db -> heap,
 		// drizzle schema -> null
-		if (mode === 'push' && it.using && !it.using.to && it.using.from === defaults.accessMethod) {
+		//
+		// should work for push and generate since that is commutative
+		// + when we introspect we recieve heap,
+		if (it.using && !it.using.to && it.using.from === defaults.accessMethod) {
 			delete it.using;
 		}
 
@@ -1228,6 +1245,7 @@ export const ddlDiff = async (
 
 	jsonStatements.push(...jsonDropUniqueConstraints);
 	jsonStatements.push(...jsonDropCheckConstraints);
+	jsonStatements.push(...jsonRenamedCheckConstraints);
 
 	// TODO: ? will need to drop indexes before changing any columns in table
 	// Then should go column alternations and then index creation

@@ -1,9 +1,11 @@
 /* eslint-disable drizzle-internal/require-entity-kind */
+import type { AnyColumn, AnyTable } from 'drizzle-orm';
 import { entityKind, eq, is, sql } from 'drizzle-orm';
 import type { MySqlTable, MySqlTableWithColumns } from 'drizzle-orm/mysql-core';
 import { MySqlDatabase } from 'drizzle-orm/mysql-core';
 import type { PgTable, PgTableWithColumns } from 'drizzle-orm/pg-core';
-import { PgDatabase } from 'drizzle-orm/pg-core';
+import { getTableConfig as getTableConfigPg, type PgDialect } from 'drizzle-orm/pg-core';
+import { PgAsyncDatabase } from 'drizzle-orm/pg-core/async';
 import type { SQLiteTable, SQLiteTableWithColumns } from 'drizzle-orm/sqlite-core';
 import { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
 import { generatorsMap } from './generators/GeneratorFuncs.ts';
@@ -13,6 +15,7 @@ import type {
 	GenerateCompositeUniqueKey,
 	GenerateHashFromString,
 	GenerateWeightedCount,
+	WeightedRandomGenerator,
 } from './generators/Generators.ts';
 import type {
 	DbType,
@@ -28,7 +31,7 @@ import type { Prettify, Relation, Table } from './types/tables.ts';
 import type { CockroachTable, CockroachTableWithColumns } from 'drizzle-orm/cockroach-core';
 import { CockroachDatabase } from 'drizzle-orm/cockroach-core';
 import type { MsSqlTable, MsSqlTableWithColumns } from 'drizzle-orm/mssql-core';
-import { getTableConfig, MsSqlDatabase } from 'drizzle-orm/mssql-core';
+import { getTableConfig as getTableConfigMsSql, MsSqlDatabase } from 'drizzle-orm/mssql-core';
 import type { SingleStoreTable, SingleStoreTableWithColumns } from 'drizzle-orm/singlestore-core';
 import { SingleStoreDatabase } from 'drizzle-orm/singlestore-core';
 import { selectGeneratorForCockroachColumn } from './cockroach-core/selectGensForColumn.ts';
@@ -38,7 +41,7 @@ import { selectGeneratorForMysqlColumn } from './mysql-core/selectGensForColumn.
 import { selectGeneratorForPostgresColumn } from './pg-core/selectGensForColumn.ts';
 import { selectGeneratorForSingleStoreColumn } from './singlestore-core/selectGensForColumn.ts';
 import { selectGeneratorForSqlite } from './sqlite-core/selectGensForColumn.ts';
-import { equalSets } from './utils.ts';
+import { equalSets, intMax, isPostgresColumnIntLike } from './utils.ts';
 
 export class SeedService {
 	static readonly entityKind: string = 'SeedService';
@@ -120,6 +123,7 @@ export class SeedService {
 				}
 			}
 
+			// handling refinements (count, with)
 			if (refinements !== undefined && refinements[table.name] !== undefined) {
 				if (refinements[table.name]!.count !== undefined) {
 					tablesPossibleGenerators[i]!.count = refinements[table.name]!.count;
@@ -207,6 +211,7 @@ export class SeedService {
 					wasRefined: false,
 				};
 
+				// handling refinements (columnGenerator)
 				if (
 					refinements !== undefined
 					&& refinements[table.name] !== undefined
@@ -224,24 +229,21 @@ export class SeedService {
 						}
 
 						// Generating undefined as a value for a column and then inserting it via drizzle-orm
-						// will result in the value not being inserted into that column.
+						// will result in null of default value being inserted into that column.
 						columnPossibleGenerator.generator = new generatorsMap.GenerateDefault[0]({ defaultValue: undefined });
 						columnPossibleGenerator.wasRefined = true;
 
 						continue;
 					}
 
-					if (col.columnType.match(/\[\w*]/g) !== null) {
-						if (
-							(col.baseColumn?.dataType === 'array' && col.baseColumn.columnType.match(/\[\w*]/g) !== null)
-							// studio case
-							|| (col.typeParams.dimensions !== undefined && col.typeParams.dimensions > 1)
-						) {
-							throw new Error("for now you can't specify generators for columns of dimension greater than 1.");
-						}
-
-						genObj.baseColumnDataType = col.baseColumn?.dataType;
+					if (
+						(col.typeParams.dimensions && col.typeParams.dimensions > 1)
+						|| (col.typeParams.dimensions !== undefined && col.typeParams.dimensions > 1)
+					) {
+						throw new Error("for now you can't specify generators for columns of dimension greater than 1.");
 					}
+
+					genObj.columnDataType = col.dataType;
 
 					columnPossibleGenerator.generator = genObj;
 					columnPossibleGenerator.wasRefined = true;
@@ -276,7 +278,7 @@ export class SeedService {
 						)
 					)
 						&& col.notNull === false;
-
+					// TODO: revise this part
 					if (predicate === true) {
 						if (
 							(foreignKeyColumns[col.name]?.table === undefined
@@ -289,14 +291,20 @@ export class SeedService {
 									+ `\n\nFor more details, check this: https://orm.drizzle.team/docs/guides/seeding-with-partially-exposed-tables#example-2`,
 							);
 						}
-						columnPossibleGenerator.generator = new generatorsMap.GenerateDefault[0]({ defaultValue: null });
+						columnPossibleGenerator.generator = new generatorsMap.GenerateValuesFromArray[0]({ values: [null] });
 						columnPossibleGenerator.wasDefinedBefore = true;
 					} else {
-						columnPossibleGenerator.generator = new generatorsMap.HollowGenerator[0]();
+						// self relation
+						if (foreignKeyColumns[col.name]!.table === table.name) {
+							columnPossibleGenerator.generator = new generatorsMap.GenerateSelfRelationsValuesFromArray[0]();
+						} else columnPossibleGenerator.generator = new generatorsMap.GenerateValuesFromArray[0]();
 					}
 				} // TODO: rewrite pickGeneratorFor... using new col properties: isUnique and notNull
 				else if (connectionType === 'postgresql') {
-					columnPossibleGenerator.generator = selectGeneratorForPostgresColumn(table, col);
+					columnPossibleGenerator.generator = selectGeneratorForPostgresColumn(
+						col,
+						table.primaryKeys.includes(col.name),
+					);
 				} else if (connectionType === 'mysql') {
 					columnPossibleGenerator.generator = selectGeneratorForMysqlColumn(table, col);
 				} else if (connectionType === 'sqlite') {
@@ -353,6 +361,7 @@ export class SeedService {
 
 				// to handle composite unique key generation, I will need a unique generator for each column in the composite key
 				if (compositeKeyColumnNames.length === 1) {
+					// params.isUnique = false can only be set by the user; by default, it is undefined
 					if (columnPossibleGenerator.generator.params.isUnique === false) {
 						throw new Error(
 							`To handle the composite unique key on columns: ${compositeKeyColumnNames[0]}, `
@@ -418,6 +427,12 @@ export class SeedService {
 			(generator as GenerateArray).params.baseColumnGen = newBaseColumnGen;
 		}
 
+		if (entityKind === 'WeightedRandomGenerator') {
+			for (const param of (generator as WeightedRandomGenerator).params) {
+				param.value = this.selectVersionOfGenerator(param.value);
+			}
+		}
+
 		const possibleGeneratorConstructors = generatorsMap[entityKind as keyof typeof generatorsMap];
 
 		const possibleGeneratorConstructorsFiltered = possibleGeneratorConstructors?.filter((possGenCon) =>
@@ -431,7 +446,7 @@ export class SeedService {
 		}
 
 		const newGenerator = new generatorConstructor(generator.params);
-		newGenerator.baseColumnDataType = generator.baseColumnDataType;
+		newGenerator.columnDataType = generator.columnDataType;
 		newGenerator.isUnique = generator.isUnique;
 		// TODO: for now only GenerateValuesFromArray support notNull property
 		newGenerator.notNull = generator.notNull;
@@ -718,7 +733,8 @@ export class SeedService {
 
 			// get values to generate columns with foreign key
 
-			// if table posts contains foreign key to table users, then rel.table === 'posts' and rel.refTable === 'users', because table posts has reference to table users.
+			// if table posts contains foreign key to table users, then rel.table === 'posts' and rel.refTable === 'users',
+			// because table posts has reference to table users.
 			if (filteredRelations.length !== 0) {
 				for (const rel of filteredRelations) {
 					if (
@@ -761,13 +777,8 @@ export class SeedService {
 							}))!.map((rows) => rows[refColName]);
 
 							hasSelfRelation = true;
-							genObj = new generatorsMap.GenerateSelfRelationsValuesFromArray[0]({
-								values: refColumnValues as (string | number | bigint)[],
-							});
-							genObj = this.selectVersionOfGenerator(genObj);
-							// genObj = new GenerateSelfRelationsValuesFromArray({
-							// 	values: refColumnValues,
-							// });
+							genObj = tableGenerators[rel.columns[colIdx]!]!.generator!;
+							genObj.updateParams({ columnName: rel.columns[colIdx]!, paramsToUpdate: { values: refColumnValues } });
 						} else if (
 							tableGenerators[rel.columns[colIdx]!]?.wasDefinedBefore === false
 							&& tableGenerators[rel.columns[colIdx]!]?.wasRefined === false
@@ -786,9 +797,9 @@ export class SeedService {
 							}
 
 							// TODO: revise maybe need to select version of generator here too
-							genObj = new generatorsMap.GenerateValuesFromArray[0]({
-								values: refColumnValues as (string | number | bigint)[],
-							});
+							genObj = tableGenerators[rel.columns[colIdx]!]!.generator!;
+							genObj.updateParams({ columnName: rel.columns[colIdx]!, paramsToUpdate: { values: refColumnValues } });
+
 							genObj.notNull = tableGenerators[rel.columns[colIdx]!]!.notNull;
 							genObj.weightedCountSeed = weightedCountSeed;
 							genObj.maxRepeatedValuesCount = repeatedValuesCount;
@@ -918,8 +929,43 @@ export class SeedService {
 			// 	columnsGenerators[columnName] = uniqueGen;
 			// }
 		}
+
+		// sequence updates will only be performed for PostgreSQL, since MySQL and SQLite already update their sequences correctly on their own.
+		const columnsToUpdateSeq: Map<
+			string,
+			{
+				schemaName: string | undefined;
+				tableName: string;
+				columnName: string;
+				valueToUpdate?: number | bigint;
+				table: AnyTable<any>;
+				column: AnyColumn<any>;
+			}
+		> = new Map();
+		if (
+			count > 0 && is(db, PgAsyncDatabase) && schema !== undefined && tableName !== undefined
+			&& schema[tableName] !== undefined
+		) {
+			const tableConfig = getTableConfigPg(schema[tableName] as PgTable);
+			for (const column of tableConfig.columns) {
+				// TODO should I filter only primary key columns?
+				// should I filter column by dataType or by column drizzle type?
+				// column.dataType === 'number' || column.dataType === 'bigint'
+				if (isPostgresColumnIntLike(column)) {
+					columnsToUpdateSeq.set(column.name, {
+						schemaName: tableConfig.schema,
+						tableName: tableConfig.name,
+						columnName: column.name,
+						valueToUpdate: undefined,
+						table: schema[tableName],
+						column: (schema[tableName] as PgTableWithColumns<any>)[column.name],
+					});
+				}
+			}
+		}
+
 		let maxParametersNumber: number;
-		if (is(db, PgDatabase<any>)) {
+		if (is(db, PgAsyncDatabase<any>)) {
 			// @ts-ignore
 			maxParametersNumber = db.constructor[entityKind] === 'PgliteDatabase'
 				? this.postgresPgLiteMaxParametersNumber
@@ -956,6 +1002,13 @@ export class SeedService {
 					| number
 					| boolean;
 				row[columnName as keyof typeof row] = generatedValue;
+
+				const colToUpdateSeq = columnsToUpdateSeq.get(columnName);
+				if (columnsToUpdateSeq.size !== 0 && colToUpdateSeq !== undefined) {
+					colToUpdateSeq.valueToUpdate = colToUpdateSeq?.valueToUpdate === undefined
+						? generatedValue as number | bigint
+						: intMax([colToUpdateSeq!.valueToUpdate, generatedValue as number | bigint]);
+				}
 			}
 
 			if (
@@ -1018,9 +1071,54 @@ export class SeedService {
 					}
 				}
 			}
+
+			const columnsToUpdateSeqFiltered = [...columnsToUpdateSeq.values()].filter((col) =>
+				col.valueToUpdate !== undefined
+			);
+			if (
+				i === count - 1
+				&& columnsToUpdateSeqFiltered.length !== 0 && db !== undefined
+			) {
+				for (const columnConfig of columnsToUpdateSeq.values()) {
+					if (columnConfig) {
+						await this.updateColumnSequence({ db, columnConfig });
+					}
+				}
+			}
 		}
 
 		return preserveData === true ? generatedValues : [];
+	};
+
+	updateColumnSequence = async (
+		{ db, columnConfig: { valueToUpdate, table, column } }: {
+			db: DbType;
+			columnConfig: {
+				schemaName?: string;
+				tableName: string;
+				columnName: string;
+				valueToUpdate?: number | bigint;
+				table: AnyTable<any>;
+				column: AnyColumn<any>;
+			};
+		},
+	) => {
+		if (is(db, PgAsyncDatabase)) {
+			// const fullTableName = schemaName ? `"${schemaName}"."${tableName}"` : `"${tableName}"`;
+			const dialect = (<any> db).dialect as PgDialect;
+			// const columnCasing = (<any> dialect).casing as CasingCache;
+			// const columnName = columnCasing.getColumnCasing(column as any);
+			const fullTableName = dialect.sqlToQuery(sql`${table}`).sql;
+			const columnName = dialect.sqlToQuery(sql`${column}`).sql.replace(`${fullTableName}.`, '').replaceAll('"', '');
+
+			const rawQuery = `SELECT setval(pg_get_serial_sequence('${fullTableName}', '${columnName}'), ${
+				(valueToUpdate ?? 'null').toString()
+			}, true);`;
+			await db.execute(rawQuery);
+		}
+		// mysql updates auto_increment or serial column by itself
+		// sqlite updates autoincrement  column by itself
+		return;
 	};
 
 	insertInDb = async ({
@@ -1040,7 +1138,7 @@ export class SeedService {
 		tableName: string;
 		override: boolean;
 	}) => {
-		if (is(db, PgDatabase<any>)) {
+		if (is(db, PgAsyncDatabase<any>)) {
 			const query = db.insert((schema as { [key: string]: PgTable })[tableName]!);
 			if (override === true) {
 				return await query.overridingSystemValue().values(generatedValues);
@@ -1058,7 +1156,7 @@ export class SeedService {
 			let schemaDbName: string | undefined;
 			let tableDbName: string | undefined;
 			if (override === true) {
-				const tableConfig = getTableConfig(schema[tableName]! as MsSqlTable);
+				const tableConfig = getTableConfigMsSql(schema[tableName]! as MsSqlTable);
 				schemaDbName = tableConfig.schema ?? 'dbo';
 				tableDbName = tableConfig.name;
 				await db.execute(sql.raw(`SET IDENTITY_INSERT [${schemaDbName}].[${tableDbName}] ON;`));
@@ -1105,7 +1203,7 @@ export class SeedService {
 		const uniqueNotNullColValue = values[uniqueNotNullColName];
 		values = Object.fromEntries(Object.entries(values).filter(([colName]) => colName !== uniqueNotNullColName));
 
-		if (is(db, PgDatabase<any>)) {
+		if (is(db, PgAsyncDatabase<any>)) {
 			const table = (schema as { [key: string]: PgTableWithColumns<any> })[tableName]!;
 			const uniqueNotNullCol = table[uniqueNotNullColName];
 			await db.update(table).set(values).where(

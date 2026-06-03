@@ -1,7 +1,9 @@
 import type { MigrationConfig } from '~/migrator.ts';
 import { readMigrationFiles } from '~/migrator.ts';
+import { getMigrationsToRun } from '~/migrator.utils.ts';
 import type { AnyRelations } from '~/relations.ts';
 import { sql } from '~/sql/sql.ts';
+import { upgradeAsyncIfNeeded } from '~/up-migrations/sqlite-proxy.ts';
 import type { SqliteRemoteDatabase } from './driver.ts';
 
 export type ProxyMigrator = (migrationQueries: string[]) => Promise<void>;
@@ -17,19 +19,25 @@ export async function migrate<TSchema extends Record<string, unknown>, TRelation
 		? '__drizzle_migrations'
 		: config.migrationsTable ?? '__drizzle_migrations';
 
-	const migrationTableCreate = sql`
+	// Detect DB version and upgrade table schema if needed
+	const { newDb } = await upgradeAsyncIfNeeded(migrationsTable, db, callback, migrations);
+
+	if (newDb) {
+		const migrationTableCreate = sql`
 		CREATE TABLE IF NOT EXISTS ${sql.identifier(migrationsTable)} (
-			id SERIAL PRIMARY KEY,
+			id INTEGER PRIMARY KEY,
 			hash text NOT NULL,
-			created_at numeric
-		)
-	`;
+			created_at numeric,
+			name text,
+			applied_at TEXT
+		);`;
 
-	await db.run(migrationTableCreate);
+		await db.run(migrationTableCreate);
+	}
 
-	const dbMigrations = await db.values<[number, string, string]>(
-		sql`SELECT id, hash, created_at FROM ${sql.identifier(migrationsTable)} ORDER BY created_at DESC LIMIT 1`,
-	);
+	const dbMigrations = (await db.values<[number, string, string, string | null]>(
+		sql`SELECT id, hash, created_at, name FROM ${sql.identifier(migrationsTable)}`,
+	)).map(([id, hash, created_at, name]) => ({ id, hash, created_at, name }));
 
 	if (typeof config === 'object' && config.init) {
 		if (dbMigrations.length) {
@@ -49,7 +57,10 @@ export async function migrate<TSchema extends Record<string, unknown>, TRelation
 				db.dialect.sqlToQuery(
 					sql`insert into ${
 						sql.identifier(migrationsTable)
-					} ("hash", "created_at") values(${migration.hash}, ${migration.folderMillis})`.inlineParams(),
+					} ("hash", "created_at", "name", "applied_at") values(${migration.hash}, ${migration.folderMillis}, ${migration.name}, ${
+						new Date().toISOString()
+					})`
+						.inlineParams(),
 				).sql,
 			],
 		);
@@ -57,22 +68,20 @@ export async function migrate<TSchema extends Record<string, unknown>, TRelation
 		return;
 	}
 
-	const lastDbMigration = dbMigrations[0] ?? undefined;
+	const migrationsToRun = getMigrationsToRun({ localMigrations: migrations, dbMigrations });
 	const queriesToRun: string[] = [];
-	for (const migration of migrations) {
-		if (
-			!lastDbMigration
-			|| Number(lastDbMigration[2])! < migration.folderMillis
-		) {
-			queriesToRun.push(
-				...migration.sql,
-				db.dialect.sqlToQuery(
-					sql`insert into ${
-						sql.identifier(migrationsTable)
-					} ("hash", "created_at") values(${migration.hash}, ${migration.folderMillis})`.inlineParams(),
-				).sql,
-			);
-		}
+	for (const migration of migrationsToRun) {
+		queriesToRun.push(
+			...migration.sql,
+			db.dialect.sqlToQuery(
+				sql`insert into ${
+					sql.identifier(migrationsTable)
+				} ("hash", "created_at", "name", "applied_at") values(${migration.hash}, ${migration.folderMillis}, ${migration.name}, ${
+					new Date().toISOString()
+				})`
+					.inlineParams(),
+			).sql,
+		);
 	}
 
 	await callback(queriesToRun);

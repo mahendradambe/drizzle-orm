@@ -13,6 +13,7 @@ import {
 	primaryKey,
 	singlestoreEnum,
 	singlestoreTable,
+	singlestoreTableCreator,
 	smallint,
 	text,
 	time,
@@ -23,17 +24,22 @@ import {
 	vector,
 	year,
 } from 'drizzle-orm/singlestore-core';
+import { Connection } from 'mysql2/promise';
 import { DB } from 'src/utils';
 import { afterAll, beforeAll, beforeEach, expect, test } from 'vitest';
 import { DialectSuite, run } from '../push/common';
-import { diffPush, prepareTestDatabase, TestDatabase } from './mocks';
+import { diff, diffPush, prepareTestDatabase, TestDatabase } from './mocks';
+
+fs.mkdirSync('./tests/singlestore/migrations', { recursive: true });
 
 let _: TestDatabase;
 let db: DB;
+let client: Connection;
 
 beforeAll(async () => {
 	_ = await prepareTestDatabase();
 	db = _.db;
+	client = _.client;
 });
 
 afterAll(async () => {
@@ -699,6 +705,28 @@ test('change data type. db has indexes. table does not have values', async (t) =
 	]);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/4474
+test('no second creation of index', async (t) => {
+	const createTable = singlestoreTableCreator((name) => `drive_tutorial_${name}`);
+
+	const files_table = createTable('files_table', {
+		id: bigint('id', { mode: 'bigint' }).primaryKey().autoincrement(),
+		parent: bigint('parent', { mode: 'bigint' }).notNull(),
+	}, (t) => {
+		return [
+			index('parent_folder_index').on(t.parent),
+		];
+	});
+
+	const schema1 = { files_table };
+	const { sqlStatements } = await diffPush({
+		db,
+		init: schema1,
+		destination: schema1,
+	});
+	expect(sqlStatements).toStrictEqual([]);
+});
+
 test('change data type. db has indexes. table has values', async (t) => {
 	const schema1 = {
 		users: singlestoreTable('users', {
@@ -762,4 +790,55 @@ test('add column. add default to column without not null', async (t) => {
 		`ALTER TABLE \`users\` MODIFY COLUMN \`name\` text DEFAULT 'drizzle';`,
 		`ALTER TABLE \`users\` ADD \`age\` int;`,
 	]);
+});
+
+test('push after migrate with custom migrations table #1', async () => {
+	const migrationsConfig = {
+		table: undefined,
+	};
+
+	const { migrate } = await import('drizzle-orm/singlestore/migrator');
+	const { drizzle } = await import('drizzle-orm/singlestore');
+
+	await migrate(drizzle({ client }), {
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/singlestore/migrations',
+	});
+
+	const to = {
+		table: singlestoreTable('table1', { col1: int() }),
+	};
+
+	const { sqlStatements: st2 } = await diff({}, to, []);
+	const { sqlStatements: pst2 } = await diffPush({ db, init: {}, destination: to, migrationsConfig });
+	const expectedSt2 = [
+		'CREATE TABLE `table1` (\n\t`col1` int\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+test('push after migrate with custom migrations table #2', async () => {
+	const migrationsConfig = {
+		table: 'migrations',
+	};
+	const { migrate } = await import('drizzle-orm/singlestore/migrator');
+	const { drizzle } = await import('drizzle-orm/singlestore');
+
+	await migrate(drizzle({ client }), {
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/singlestore/migrations',
+	});
+
+	const to = {
+		table: singlestoreTable('table1', { col1: int() }),
+	};
+
+	const { sqlStatements: st2 } = await diff({}, to, []);
+	const { sqlStatements: pst2 } = await diffPush({ db, init: {}, destination: to, migrationsConfig });
+	const expectedSt2 = [
+		'CREATE TABLE `table1` (\n\t`col1` int\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
 });

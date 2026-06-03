@@ -29,6 +29,7 @@ import {
 	year,
 } from 'drizzle-orm/singlestore-core';
 import { migrate } from 'drizzle-orm/singlestore/migrator';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { describe, expect } from 'vitest';
 import { toLocalDate } from '../utils';
 import type { Test } from './instrumentation';
@@ -659,12 +660,41 @@ export function tests(test: Test) {
 		});
 
 		test.concurrent('insert with onDuplicate', async ({ db }) => {
+			const users = singlestoreTable('userstest_update_p', {
+				id: serial('id').primaryKey(),
+				name: text('name').notNull(),
+				verified: boolean('verified').notNull().default(false),
+			});
+
+			await db.execute(sql`drop table if exists ${users};`);
+			await db.execute(sql`create table ${users} (
+						\`id\` serial primary key,
+						\`name\` text not null,
+						\`verified\` boolean not null default false
+					);`);
+
+			await db.insert(users)
+				.values({ id: 1, name: 'John' });
+
+			await db.insert(users)
+				.values({ id: 1, name: 'John' })
+				.onDuplicateKeyUpdate({ set: { name: 'John1' } });
+
+			const res = await db.select({ id: users.id, name: users.name }).from(users).where(
+				eq(users.id, 1),
+			);
+
+			expect(res).toEqual([{ id: 1, name: 'John1' }]);
+		});
+
+		test.concurrent('insert with onDuplicate placeholder', async ({ db }) => {
 			await db.insert(usersTable)
 				.values({ id: 1, name: 'John' });
 
 			await db.insert(usersTable)
 				.values({ id: 1, name: 'John' })
-				.onDuplicateKeyUpdate({ set: { name: 'John1' } });
+				.onDuplicateKeyUpdate({ set: { name: sql.placeholder('name') } })
+				.execute({ name: 'John1' });
 
 			const res = await db.select({ id: usersTable.id, name: usersTable.name }).from(usersTable).where(
 				eq(usersTable.id, 1),
@@ -903,6 +933,67 @@ export function tests(test: Test) {
 			await db.execute(sql`drop table users_migration`);
 			await db.execute(sql`drop table users12`);
 			await db.execute(sql`drop table __drizzle_migrations`);
+		});
+
+		test.concurrent('migrator: local migration is unapplied. Migrations timestamp is less than last db migration', async ({ db }) => {
+			const users = singlestoreTable('migration_users', {
+				id: serial('id').primaryKey(),
+				name: text().notNull(),
+				email: text().notNull(),
+				age: int(),
+			});
+
+			const users2 = singlestoreTable('migration_users2', {
+				id: serial('id').primaryKey(),
+				name: text().notNull(),
+				email: text().notNull(),
+				age: int(),
+			});
+
+			await db.execute(sql`drop table if exists \`__drizzle_migrations\`;`);
+			await db.execute(sql`drop table if exists ${users}`);
+			await db.execute(sql`drop table if exists ${users2}`);
+
+			// create migration directory
+			const migrationDir = './migrations/singlestore';
+			if (existsSync(migrationDir)) rmSync(migrationDir, { recursive: true });
+			mkdirSync(migrationDir, { recursive: true });
+
+			// first branch
+			mkdirSync(`${migrationDir}/20240101010101_initial`, { recursive: true });
+			writeFileSync(
+				`${migrationDir}/20240101010101_initial/migration.sql`,
+				'CREATE TABLE `migration_users` (\n`id` serial PRIMARY KEY NOT NULL,\n`name` text NOT NULL,\n`email` text NOT NULL\n);',
+			);
+			mkdirSync(`${migrationDir}/20240303030303_third`, { recursive: true });
+			writeFileSync(
+				`${migrationDir}/20240303030303_third/migration.sql`,
+				'ALTER TABLE `migration_users` ADD `age` int;',
+			);
+
+			await migrate(db, { migrationsFolder: migrationDir });
+			await db.insert(users).values({ name: 'John', email: '', age: 30 });
+			const res1 = await db.select().from(users);
+
+			// second migration was not applied yet
+			await expect(db.insert(users2).values({ name: 'John', email: '', age: 30 })).rejects.toThrowError();
+
+			// insert migration with earlier timestamp
+			mkdirSync(`${migrationDir}/20240202020202_second`, { recursive: true });
+			writeFileSync(
+				`${migrationDir}/20240202020202_second/migration.sql`,
+				'CREATE TABLE `migration_users2` (\n`id` serial PRIMARY KEY NOT NULL,\n`name` text NOT NULL,\n`email` text NOT NULL,\n`age` int\n);',
+			);
+			await migrate(db, { migrationsFolder: migrationDir });
+
+			await db.insert(users2).values({ name: 'John', email: '', age: 30 });
+			const res2 = await db.select().from(users2);
+
+			const expected = [{ id: 1, name: 'John', email: '', age: 30 }];
+			expect(res1).toStrictEqual(expected);
+			expect(res2).toStrictEqual(expected);
+
+			rmSync(migrationDir, { recursive: true });
 		});
 
 		test.concurrent('insert via db.execute + select via db.execute', async ({ db }) => {

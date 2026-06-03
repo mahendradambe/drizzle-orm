@@ -10,14 +10,13 @@ import type { MysqlSnapshot } from '../../dialects/mysql/snapshot';
 import type { SqliteSnapshot } from '../../dialects/sqlite/snapshot';
 import { BREAKPOINT } from '../../utils';
 import { prepareMigrationMetadata } from '../../utils/words';
-import type { Driver, Prefix } from '../validations/common';
+import type { Driver } from '../validations/common';
 
 export const writeResult = (config: {
 	snapshot: SqliteSnapshot | PostgresSnapshot | MysqlSnapshot | MssqlSnapshot | CockroachSnapshot | SingleStoreSnapshot;
 	sqlStatements: string[];
 	outFolder: string;
 	breakpoints: boolean;
-	prefixMode: Prefix;
 	name?: string;
 	bundle?: boolean;
 	type?: 'introspect' | 'custom' | 'none';
@@ -84,7 +83,7 @@ export const writeResult = (config: {
 			)
 		}] Your SQL migration ➜ ${
 			chalk.bold.underline.blue(
-				path.join(`${outFolder}/${tag}`),
+				path.join(`${outFolder}/${tag}/migration.sql`),
 			)
 		} 🚀`,
 	);
@@ -98,7 +97,7 @@ export const embeddedMigrations = (snapshots: string[], driver?: Driver) => {
 	const migrations: Record<string, string> = {};
 
 	snapshots.forEach((entry, idx) => {
-		const prefix = entry.split('/')[entry.split('/').length - 2];
+		const prefix = entry.split(path.sep)[entry.split(path.sep).length - 2];
 		const importName = idx.toString().padStart(4, '0');
 		content += `import m${importName} from './${prefix}/migration.sql';\n`;
 		migrations[prefix] = importName;

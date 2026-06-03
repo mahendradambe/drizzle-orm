@@ -1,5 +1,5 @@
-import { eq, sql } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
+import { DrizzleQueryError, eq, sql } from 'drizzle-orm';
+import { alias, integer, pgTable } from 'drizzle-orm/pg-core';
 import { describe, expect, vi } from 'vitest';
 import type { Test } from './instrumentation';
 import { postsTable, usersTable } from './schema';
@@ -295,6 +295,51 @@ export function tests(test: Test) {
 
 			// @ts-expect-error
 			expect(db.select().from(sq).getUsedTables()).toStrictEqual(['users']);
+		});
+
+		// https://github.com/drizzle-team/drizzle-orm/issues/4677
+		test('select+join+with', async ({ caches, push }) => {
+			const { all: db } = caches;
+
+			const shortLink = pgTable('short-link', {
+				id: integer().primaryKey(),
+				createdBy: integer().references(() => usersTable.id),
+			});
+
+			await push({ shortLink });
+
+			// using spyInvalidate = vi.spyOn(db.$cache, 'invalidate');
+			// @ts-expect-error
+			using spyInvalidate = vi.spyOn(db.$cache, 'onMutate');
+
+			const shortLinkClickCount = db.$with('shortLinkClickCount').as(db.select().from(shortLink));
+
+			const query = db.with(shortLinkClickCount).select().from(shortLinkClickCount).leftJoin(
+				usersTable,
+				eq(usersTable.id, shortLinkClickCount.createdBy),
+			);
+			// @ts-expect-error
+			const usedTables = query.getUsedTables();
+			expect(usedTables).toStrictEqual(['short-link', 'users']);
+
+			await query;
+			await db.insert(usersTable).values({ id: 1, name: 'Alex' });
+			await db.insert(shortLink).values({ id: 1, createdBy: 1 });
+
+			expect(spyInvalidate).toHaveBeenCalledTimes(2);
+		});
+
+		// Test itself passes, but breaks 'insert via db.execute w/ query builder' tests later on
+		// need to revisit test cleanup
+		test.skipIf(Date.now() < +new Date('2026-06-20'))('Query error wrapping', async ({ db, push }) => {
+			const table = pgTable('somethingelse_error_wrap_slowpath', (t) => ({
+				id: t.integer().primaryKey(),
+				name: t.text().notNull(),
+			}));
+
+			await push({ table });
+			await expect(db.insert(table).values([{ id: 1, name: 'First' }, { id: 1, name: 'Second' }]))
+				.rejects.toBeInstanceOf(DrizzleQueryError);
 		});
 	});
 }

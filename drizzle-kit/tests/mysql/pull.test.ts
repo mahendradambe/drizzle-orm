@@ -3,11 +3,13 @@ import { SQL, sql } from 'drizzle-orm';
 import {
 	AnyMySqlColumn,
 	bigint,
+	binary,
 	blob,
 	boolean,
 	char,
 	check,
 	customType,
+	datetime,
 	decimal,
 	double,
 	float,
@@ -27,11 +29,13 @@ import {
 	serial,
 	smallint,
 	text,
+	timestamp,
 	tinyblob,
 	tinyint,
 	tinytext,
 	unique,
 	uniqueIndex,
+	varbinary,
 	varchar,
 } from 'drizzle-orm/mysql-core';
 import * as fs from 'fs';
@@ -446,6 +450,7 @@ test('introspect table with self reference', async () => {
 	expect(sqlStatements).toStrictEqual([]);
 });
 
+// https://github.com/drizzle-team/drizzle-orm/issues/4885
 // https://github.com/drizzle-team/drizzle-orm/issues/4110
 test('introspect table with boolean(tinyint(1))', async () => {
 	const schema = {
@@ -461,7 +466,6 @@ test('introspect table with boolean(tinyint(1))', async () => {
 });
 
 // https://github.com/drizzle-team/drizzle-orm/issues/3046
-// TODO: revise: seems like drizzle-kit can't do this right now
 test('introspect index on json', async () => {
 	const schema = {
 		table1: mysqlTable('table1', {
@@ -474,6 +478,31 @@ test('introspect index on json', async () => {
 	};
 
 	const { statements, sqlStatements } = await diffIntrospect(db, schema, 'index-on-json');
+
+	expect(statements).toStrictEqual([]);
+	expect(sqlStatements).toStrictEqual([]);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/4499
+test('introspect functional index', async () => {
+	const schema = {
+		appBadgeTag: mysqlTable('app_badge_tag', {
+			tagId: varchar('tag_id', { length: 255 }).primaryKey(),
+			badgeId: varchar('badge_id', { length: 32 }).notNull(),
+			designId: varchar('design_id', { length: 255 }),
+			colorId: varchar('color_id', { length: 255 }),
+			createdAt: datetime('created_at').default(sql`CURRENT_TIMESTAMP`).notNull(),
+		}, (table) => [
+			uniqueIndex('app_badge_tag_pk').on(
+				table.badgeId,
+				sql`(case when (\`design_id\` is null) then _utf8mb4\'\' else \`design_id\` end)`,
+				sql`(case when (\`color_id\` is null) then _utf8mb4\'\' else \`color_id\` end)`,
+			),
+			index('app_badge_tag_design_id_index').on(table.designId),
+		]),
+	};
+
+	const { statements, sqlStatements } = await diffIntrospect(db, schema, 'functional-index');
 
 	expect(statements).toStrictEqual([]);
 	expect(sqlStatements).toStrictEqual([]);
@@ -570,7 +599,7 @@ test('generated as string: change generated constraint', async () => {
 			id2: int('id2'),
 			name: text('name'),
 			generatedName: text('gen_name').generatedAlwaysAs(
-				`'users\\\\hello'`,
+				sql`'users\\\\hello'`,
 			),
 		}),
 	};
@@ -605,6 +634,8 @@ test('introspect view with table filter', async () => {
 		db,
 		'drizzle',
 		filter,
+		() => {},
+		{ schema: 'drizzle', table: '__drizzle_migrations' },
 	));
 	const expectedTables = [{ entityType: 'tables', name: 'table1' }];
 	expect(tables).toStrictEqual(expectedTables);
@@ -620,6 +651,8 @@ test('introspect view with table filter', async () => {
 		db,
 		'drizzle',
 		filter,
+		() => {},
+		{ schema: 'drizzle', table: '__drizzle_migrations' },
 	));
 	const expectedViews = [
 		{
@@ -633,4 +666,394 @@ test('introspect view with table filter', async () => {
 	];
 	expect(tables).toStrictEqual(expectedTables);
 	expect(views).toStrictEqual(expectedViews);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5053
+test('single quote default', async () => {
+	const group = mysqlTable('group', {
+		id: text().notNull(),
+		fk_organizaton_group: text().notNull(),
+		saml_identifier: text().default('').notNull(),
+		display_name: text().default('').notNull(),
+	});
+
+	const { sqlStatements } = await diffIntrospect(
+		db,
+		{ group },
+		'single_quote_default',
+	);
+
+	expect(sqlStatements).toStrictEqual([]);
+});
+
+// filter default migration table
+test('pull after migrate with custom migrations table #1', async () => {
+	await db.query(`
+		CREATE TABLE IF NOT EXISTS __drizzle_migrations (
+			id INT PRIMARY KEY,
+			name TEXT NOT NULL
+		);
+	`);
+	await db.query(`
+		CREATE TABLE IF NOT EXISTS users (
+			id INT PRIMARY KEY,
+			name TEXT NOT NULL
+		);
+	`);
+
+	const { pks, columns, tables } = await fromDatabaseForDrizzle(
+		db,
+		'drizzle',
+		() => true,
+		() => {},
+		{
+			table: '__drizzle_migrations',
+			schema: 'drizzle',
+		},
+	);
+
+	expect([...tables, ...pks]).toStrictEqual([
+		{
+			entityType: 'tables',
+			name: 'users',
+		},
+		{
+			columns: [
+				'id',
+			],
+			entityType: 'pks',
+			name: 'PRIMARY',
+			table: 'users',
+		},
+	]);
+});
+
+// filter custom migration table
+test('pull after migrate with custom migrations table #2', async () => {
+	await db.query(`
+		CREATE TABLE IF NOT EXISTS custom_migrations (
+			id INT PRIMARY KEY,
+			name TEXT NOT NULL
+		);
+	`);
+	await db.query(`
+		CREATE TABLE IF NOT EXISTS users (
+			id INT PRIMARY KEY,
+			name TEXT NOT NULL
+		);
+	`);
+
+	const { tables, pks } = await fromDatabaseForDrizzle(
+		db,
+		'drizzle',
+		() => true,
+		() => {},
+		{
+			table: 'custom_migrations',
+			schema: 'drizzle', // default from prepare params
+		},
+	);
+
+	expect([...tables, ...pks]).toStrictEqual([
+		{
+			entityType: 'tables',
+			name: 'users',
+		},
+		{
+			columns: [
+				'id',
+			],
+			entityType: 'pks',
+			name: 'PRIMARY',
+			table: 'users',
+		},
+	]);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5212
+test('datetime #1', async () => {
+	const table1 = mysqlTable('table1', {
+		col1: datetime().notNull().default(sql`CURRENT_TIMESTAMP`),
+		col2: datetime().notNull().default(sql`CURRENT_TIMESTAMP`).onUpdateNow(),
+	});
+
+	const { sqlStatements } = await diffIntrospect(
+		db,
+		{ table1 },
+		'datetime-1',
+	);
+
+	expect(sqlStatements).toStrictEqual([]);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/4499
+test('datetime #2', async () => {
+	await db.query(`CREATE TABLE \`app_badge_tag\` (
+  				\`tag_id\` varchar(255) NOT NULL,
+  				\`badge_id\` varchar(32) NOT NULL,
+  				\`design_id\` varchar(255) DEFAULT NULL,
+  				\`color_id\` varchar(255) DEFAULT NULL,
+  				\`created_at\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  				PRIMARY KEY (\`tag_id\`),
+  				UNIQUE KEY \`app_badge_tag_pk\` (\`badge_id\`,((case when (\`design_id\` is null) then _utf8mb4'' else \`design_id\` end)),((case when (\`color_id\` is null) then _utf8mb4'' else \`color_id\` end))),
+  				KEY \`app_badge_tag_design_id_index\` (\`design_id\`)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`);
+	const { sqlStatements } = await diffIntrospect(
+		db,
+		{},
+		'datetime-2',
+	);
+
+	expect(sqlStatements).toStrictEqual([]);
+});
+
+test('introspect varbinary and binary', async () => {
+	const table1 = mysqlTable('table1', {
+		col1: varbinary({ length: 16 }),
+		col2: binary({ length: 16 }).default(''),
+	});
+
+	const { sqlStatements } = await diffIntrospect(
+		db,
+		{ table1 },
+		'varbinary-and-binary',
+	);
+
+	expect(sqlStatements).toStrictEqual([]);
+});
+
+test('timestamp def CURRENT_TIMESTAMP with precision', async () => {
+	const table1 = mysqlTable('table1', {
+		col1: timestamp({ fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+	});
+
+	const { sqlStatements } = await diffIntrospect(
+		db,
+		{ table1 },
+		'timestamp-def-current-timestamp-with-precision',
+	);
+
+	expect(sqlStatements).toStrictEqual([]);
+});
+
+test('fks with same names but in diff databases', async () => {
+	await db.query('DROP DATABASE if exists `fk_test`;');
+	await db.query('DROP DATABASE if exists `fk_test_2`;');
+	await db.query('CREATE DATABASE `fk_test`;');
+	await db.query('CREATE DATABASE `fk_test_2`;');
+
+	await db.query(`USE fk_test;`);
+	await db.query(`
+		CREATE TABLE parent (
+			id INT PRIMARY KEY
+		);
+	`);
+	await db.query(`
+		CREATE TABLE child (
+			id INT PRIMARY KEY,
+			parent_id INT,
+			CONSTRAINT fk_parent FOREIGN KEY (parent_id) REFERENCES parent(id)
+		);
+	`);
+
+	await db.query(`USE fk_test_2;`);
+	await db.query(`
+		CREATE TABLE parent (
+			id INT PRIMARY KEY
+		);
+	`);
+	await db.query(`
+		CREATE TABLE child (
+			id INT PRIMARY KEY,
+			parent_id INT,
+			CONSTRAINT fk_parent FOREIGN KEY (parent_id) REFERENCES parent(id)
+		);
+	`);
+
+	const { fks } = await fromDatabaseForDrizzle(db, 'fk_test', () => true, () => {}, {
+		table: '__drizzle_migrations',
+		schema: 'drizzle',
+	});
+
+	expect(fks).toStrictEqual([{
+		columns: [
+			'parent_id',
+		],
+		columnsTo: [
+			'id',
+		],
+		entityType: 'fks',
+		name: 'fk_parent',
+		nameExplicit: true,
+		onDelete: 'NO ACTION',
+		onUpdate: 'NO ACTION',
+		table: 'child',
+		tableTo: 'parent',
+	}]);
+});
+
+test('introspect cyclic foreign key', async () => {
+	const inviteCode = mysqlTable('InviteCode', {
+		id: int().primaryKey(),
+		inviterUserId: int().references((): AnyMySqlColumn => users.id),
+	});
+
+	const users = mysqlTable('Users', {
+		id: int().primaryKey(),
+		inviteId: int().references((): AnyMySqlColumn => inviteCode.id),
+	});
+
+	const { statements, sqlStatements } = await diffIntrospect(db, { inviteCode, users }, 'cyclic-foreign-key');
+
+	expect(statements).toStrictEqual([]);
+	expect(sqlStatements).toStrictEqual([]);
+});
+
+test('double-quote-issue', async () => {
+	const content = mysqlTable('content', {
+		id: int('id').notNull(),
+		virtualPath: varchar('virtual_path', { length: 255 }).notNull(),
+		pid: varchar('pid', { length: 750 }).notNull(),
+		pageTitle: varchar('page_title', { length: 75 }).default('Untitled Document').notNull(),
+		navTitle: varchar('nav_title', { length: 25 }).default('NULL'),
+		protected: mysqlEnum('protected', ['Y', 'N']).default('N').notNull(),
+		metaData: varchar('meta_data', { length: 750 }).default('NULL'),
+		content: longtext('content').notNull(),
+		navPlacement: longtext('navPlacement').default('NULL'),
+		weight: decimal('weight', { precision: 10, scale: 2 }).notNull(),
+		dateRecorded: datetime('date_recorded', { mode: 'string' }).notNull(),
+		lastModified: timestamp('last_modified', { mode: 'string' }).default(sql`current_timestamp()`),
+	});
+
+	const { statements, sqlStatements } = await diffIntrospect(db, { content }, 'double-quote-issue');
+
+	expect(statements).toStrictEqual([]);
+	expect(sqlStatements).toStrictEqual([]);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5546
+test('issue #5546', async () => {
+	await db.query(`CREATE TABLE my_table (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  col INT
+);`);
+	await db.query(`CREATE UNIQUE INDEX idx_functional 
+ON my_table ((CASE WHEN col = 1 THEN 1 ELSE NULL END));`);
+
+	await db.query(`CREATE TABLE base_table (
+  id INT, 
+  name VARCHAR(50)
+);
+`);
+
+	await db.query(`
+CREATE USER 'ghost_user'@'%' IDENTIFIED BY 'temp123';`);
+
+	await db.query(`CREATE DEFINER='ghost_user'@'%' VIEW broken_view AS SELECT * FROM base_table;`);
+
+	await db.query(`DROP USER 'ghost_user'@'%';`);
+
+	const { statements, sqlStatements, ddlAfterPull } = await diffIntrospect(db, {}, '#5546');
+
+	expect(ddlAfterPull.entities.list()).toStrictEqual([
+		{
+			entityType: 'tables',
+			name: 'base_table',
+		},
+		{
+			entityType: 'tables',
+			name: 'my_table',
+		},
+		{
+			autoIncrement: false,
+			charSet: null,
+			collation: null,
+			default: null,
+			entityType: 'columns',
+			generated: null,
+			name: 'id',
+			notNull: false,
+			onUpdateNow: false,
+			onUpdateNowFsp: null,
+			table: 'base_table',
+			type: 'int',
+		},
+		{
+			autoIncrement: false,
+			charSet: null,
+			collation: null,
+			default: null,
+			entityType: 'columns',
+			generated: null,
+			name: 'name',
+			notNull: false,
+			onUpdateNow: false,
+			onUpdateNowFsp: null,
+			table: 'base_table',
+			type: 'varchar(50)',
+		},
+		{
+			autoIncrement: true,
+			charSet: null,
+			collation: null,
+			default: null,
+			entityType: 'columns',
+			generated: null,
+			name: 'id',
+			notNull: true,
+			onUpdateNow: false,
+			onUpdateNowFsp: null,
+			table: 'my_table',
+			type: 'int',
+		},
+		{
+			autoIncrement: false,
+			charSet: null,
+			collation: null,
+			default: null,
+			entityType: 'columns',
+			generated: null,
+			name: 'col',
+			notNull: false,
+			onUpdateNow: false,
+			onUpdateNowFsp: null,
+			table: 'my_table',
+			type: 'int',
+		},
+		{
+			columns: [
+				'id',
+			],
+			entityType: 'pks',
+			name: 'PRIMARY',
+			table: 'my_table',
+		},
+		{
+			algorithm: null,
+			columns: [
+				{
+					isExpression: true,
+					value: '(case when (`col` = 1) then 1 else NULL end)',
+				},
+			],
+			entityType: 'indexes',
+			isUnique: true,
+			lock: null,
+			name: 'idx_functional',
+			nameExplicit: true,
+			table: 'my_table',
+			using: null,
+		},
+		{
+			algorithm: 'undefined',
+			definition:
+				'select `drizzle`.`base_table`.`id` AS `id`,`drizzle`.`base_table`.`name` AS `name` from `drizzle`.`base_table`',
+			entityType: 'views',
+			name: 'broken_view',
+			sqlSecurity: 'definer',
+			withCheckOption: null,
+		},
+	]);
+	expect(statements).toStrictEqual([]);
+	expect(sqlStatements).toStrictEqual([]);
 });

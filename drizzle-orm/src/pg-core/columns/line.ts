@@ -1,4 +1,3 @@
-import type { ColumnBaseConfig } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import type { PgTable } from '~/pg-core/table.ts';
 import { type Equal, getColumnNameAndConfig } from '~/utils.ts';
@@ -24,8 +23,11 @@ export class PgLineBuilder extends PgColumnBuilder<{
 	}
 }
 
-export class PgLineTuple<T extends ColumnBaseConfig<'array line'>> extends PgColumn<T> {
+export class PgLineTuple extends PgColumn<'array line'> {
 	static override readonly [entityKind]: string = 'PgLine';
+
+	/** @internal */
+	override readonly codec = 'line:tuple';
 
 	readonly mode = 'tuple';
 
@@ -33,14 +35,9 @@ export class PgLineTuple<T extends ColumnBaseConfig<'array line'>> extends PgCol
 		return 'line';
 	}
 
-	override mapFromDriverValue(value: string): [number, number, number] {
-		const [a, b, c] = value.slice(1, -1).split(',');
-		return [Number.parseFloat(a!), Number.parseFloat(b!), Number.parseFloat(c!)];
-	}
-
-	override mapToDriverValue(value: [number, number, number]): string {
+	override mapToDriverValue = (value: [number, number, number]): string => {
 		return `{${value[0]},${value[1]},${value[2]}}`;
-	}
+	};
 }
 
 export class PgLineABCBuilder extends PgColumnBuilder<{
@@ -63,8 +60,11 @@ export class PgLineABCBuilder extends PgColumnBuilder<{
 	}
 }
 
-export class PgLineABC<T extends ColumnBaseConfig<'object line'>> extends PgColumn<T> {
+export class PgLineABC extends PgColumn<'object line'> {
 	static override readonly [entityKind]: string = 'PgLineABC';
+
+	/** @internal */
+	override readonly codec = 'line';
 
 	readonly mode = 'abc';
 
@@ -72,14 +72,9 @@ export class PgLineABC<T extends ColumnBaseConfig<'object line'>> extends PgColu
 		return 'line';
 	}
 
-	override mapFromDriverValue(value: string): { a: number; b: number; c: number } {
-		const [a, b, c] = value.slice(1, -1).split(',');
-		return { a: Number.parseFloat(a!), b: Number.parseFloat(b!), c: Number.parseFloat(c!) };
-	}
-
-	override mapToDriverValue(value: { a: number; b: number; c: number }): string {
+	override mapToDriverValue = (value: { a: number; b: number; c: number }): string => {
 		return `{${value.a},${value.b},${value.c}}`;
-	}
+	};
 }
 
 export interface PgLineTypeConfig<T extends 'tuple' | 'abc' = 'tuple' | 'abc'> {

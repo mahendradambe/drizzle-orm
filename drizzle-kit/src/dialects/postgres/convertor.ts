@@ -1,5 +1,5 @@
 import { escapeSingleQuotes, type Simplify, wrapWith } from '../../utils';
-import { defaultNameForPK, defaults, defaultToSQL, isDefaultAction, isSerialType } from './grammar';
+import { defaultNameForPK, defaults, defaultToSQL, isDefaultAction, isSerialType, mapSerialToInt } from './grammar';
 import type { JsonStatement } from './statements';
 
 export const convertor = <
@@ -348,7 +348,7 @@ const recreateIndexConvertor = convertor('recreate_index', (st) => {
 });
 
 const alterColumnConvertor = convertor('alter_column', (st) => {
-	const { diff, to: column, isEnum, wasEnum, wasSerial } = st;
+	const { diff, to: column, isEnum, wasEnum, wasSerial, toSerial } = st;
 	const statements = [] as string[];
 
 	const key = column.schema !== 'public'
@@ -365,25 +365,39 @@ const alterColumnConvertor = convertor('alter_column', (st) => {
 		const textProxy = wasEnum && isEnum ? 'text::' : ''; // using enum1::text::enum2
 		const suffix = isEnum
 			? ` USING "${column.name}"::${textProxy}${typeSchema}"${column.type}"${'[]'.repeat(column.dimensions)}`
-			: ` USING "${column.name}"::${column.type}${'[]'.repeat(column.dimensions)}`;
-		let type: string;
+			: ` USING "${column.name}"::${toSerial ? mapSerialToInt(column.type) : column.type}${
+				'[]'.repeat(column.dimensions)
+			}`;
 
-		if (diff.type) {
-			type = diff.typeSchema?.to && diff.typeSchema.to !== 'public'
-				? `"${diff.typeSchema.to}"."${diff.type.to}"`
-				: isEnum
-				? `"${diff.type.to}"`
-				: diff.type.to;
-		} else {
-			type = `${typeSchema}${column.typeSchema ? `"${column.type}"` : column.type}`;
-		}
+		const type = diff.typeSchema?.to && diff.typeSchema.to !== 'public'
+			? `"${diff.typeSchema.to}"."${diff.type.to}"`
+			: isEnum
+			? `"${diff.type.to}"`
+			: toSerial
+			? mapSerialToInt(diff.type.to)
+			: diff.type.to;
 
 		if (wasSerial) {
-			statements.push(`ALTER TABLE ${key} ALTER COLUMN "${column.name}" DROP DEFAULT`);
+			statements.push(`ALTER TABLE ${key} ALTER COLUMN "${column.name}" DROP DEFAULT;`);
 			const sequenceKey = column.schema !== 'public'
 				? `"${column.schema}"."${column.table}_${column.name}_seq"`
 				: `"${column.table}_${column.name}_seq"`;
-			statements.push(`DROP SEQUENCE ${sequenceKey}`);
+			statements.push(`DROP SEQUENCE ${sequenceKey};`);
+		}
+
+		if (toSerial) {
+			const sequenceKey = column.schema !== 'public'
+				? `"${column.schema}"."${column.table}_${column.name}_seq"`
+				: `"${column.table}_${column.name}_seq"`;
+			const sequenceName = column.schema !== 'public'
+				? `${column.schema}.${column.table}_${column.name}_seq`
+				: `${column.table}_${column.name}_seq`;
+
+			statements.push(`CREATE SEQUENCE ${sequenceKey};`);
+			statements.push(
+				`ALTER TABLE ${key} ALTER COLUMN "${column.name}" SET DEFAULT nextval('${sequenceName}')`,
+			);
+			statements.push(`ALTER SEQUENCE ${sequenceKey} OWNED BY "${column.schema}"."${column.table}"."${column.name}";`);
 		}
 
 		statements.push(
@@ -521,7 +535,13 @@ const createIndexConvertor = convertor('create_index', (st) => {
 });
 
 const dropIndexConvertor = convertor('drop_index', (st) => {
-	return `DROP INDEX "${st.index.name}";`;
+	const { schema } = st.index;
+
+	const key = schema !== 'public'
+		? `"${schema}".`
+		: '';
+
+	return `DROP INDEX ${key}"${st.index.name}";`;
 });
 
 const renameIndexConvertor = convertor('rename_index', (st) => {
@@ -672,6 +692,15 @@ const dropUniqueConvertor = convertor('drop_unique', (st) => {
 		? `"${unique.schema}"."${unique.table}"`
 		: `"${unique.table}"`;
 	return `ALTER TABLE ${tableNameWithSchema} DROP CONSTRAINT "${unique.name}";`;
+});
+
+const alterUniqueConvertor = convertor('alter_unique', (st) => {
+	const statements: string[] = [];
+
+	statements.push(dropUniqueConvertor.convert({ unique: st.diff.$left }) as string);
+	statements.push(addUniqueConvertor.convert({ unique: st.diff.$right }) as string);
+
+	return statements;
 });
 
 const createEnumConvertor = convertor('create_enum', (st) => {
@@ -912,7 +941,7 @@ const grantPrivilegeConvertor = convertor('grant_privilege', (st) => {
 
 	return `GRANT ${privilege.type} ON ${
 		schema !== 'public' ? `"${schema}"."${table}"` : `"${table}"`
-	} TO ${privilege.grantee}${privilege.isGrantable ? ' WITH GRANT OPTION' : ''} GRANTED BY ${privilege.grantor};`;
+	} TO "${privilege.grantee}"${privilege.isGrantable ? ' WITH GRANT OPTION' : ''} GRANTED BY "${privilege.grantor}";`;
 });
 
 const revokePrivilegeConvertor = convertor('revoke_privilege', (st) => {
@@ -921,7 +950,7 @@ const revokePrivilegeConvertor = convertor('revoke_privilege', (st) => {
 
 	return `REVOKE ${privilege.type} ON ${
 		schema !== 'public' ? `"${schema}"."${table}"` : `"${table}"`
-	} FROM ${privilege.grantee};`;
+	} FROM "${privilege.grantee}";`;
 });
 
 const regrantPrivilegeConvertor = convertor('regrant_privilege', (st) => {
@@ -1042,6 +1071,7 @@ const convertors = [
 	recreateCheckConvertor,
 	addUniqueConvertor,
 	dropUniqueConvertor,
+	alterUniqueConvertor,
 	renameConstraintConvertor,
 	createEnumConvertor,
 	dropEnumConvertor,

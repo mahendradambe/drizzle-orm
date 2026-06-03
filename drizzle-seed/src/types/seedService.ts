@@ -1,17 +1,18 @@
 import type { CockroachDatabase, CockroachTable } from 'drizzle-orm/cockroach-core';
 import type { MsSqlDatabase, MsSqlTable } from 'drizzle-orm/mssql-core';
 import type { MySqlDatabase, MySqlTable } from 'drizzle-orm/mysql-core';
-import type { PgDatabase, PgTable } from 'drizzle-orm/pg-core';
+import type { PgTable } from 'drizzle-orm/pg-core';
+import type { PgAsyncDatabase } from 'drizzle-orm/pg-core/async';
 import type { SingleStoreDatabase, SingleStoreTable } from 'drizzle-orm/singlestore-core';
 import type { BaseSQLiteDatabase, SQLiteTable } from 'drizzle-orm/sqlite-core';
 import type { AbstractGenerator } from '../generators/Generators.ts';
 import type { Prettify } from './tables.ts';
 
-export type GeneratedValueType = number | bigint | string | Buffer | boolean | undefined;
+export type GeneratedValueType = number | bigint | string | Buffer | boolean | undefined | null;
 
 export type DbType =
-	| PgDatabase<any, any, any>
-	| MySqlDatabase<any, any, any, any>
+	| PgAsyncDatabase<any, any>
+	| MySqlDatabase<any, any>
 	| BaseSQLiteDatabase<any, any, any, any>
 	| MsSqlDatabase<any, any, any, any>
 	| CockroachDatabase<any, any, any>

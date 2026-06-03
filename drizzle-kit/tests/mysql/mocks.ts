@@ -10,14 +10,15 @@ import {
 	MySqlView as MysqlViewOld,
 } from 'orm044/mysql-core';
 import { v4 as uuid } from 'uuid';
+import { suggestions as diffSuggestions } from '../../src/cli/commands/generate-mysql';
 import { introspect } from '../../src/cli/commands/pull-mysql';
 import { suggestions } from '../../src/cli/commands/push-mysql';
 import { upToV6 } from '../../src/cli/commands/up-mysql';
-import { CasingType } from '../../src/cli/validations/common';
+import { configMigrations } from '../../src/cli/validations/common';
 import { mysqlSchemaError as schemaError } from '../../src/cli/views';
 import { EmptyProgressView } from '../../src/cli/views';
 import { hash } from '../../src/dialects/common';
-import { MysqlDDL, MysqlEntity } from '../../src/dialects/mysql/ddl';
+import { MysqlDDL, MysqlEntity, mysqlToRelationsPull } from '../../src/dialects/mysql/ddl';
 import { createDDL, interimToDDL } from '../../src/dialects/mysql/ddl';
 import { ddlDiff, ddlDiffDry } from '../../src/dialects/mysql/diff';
 import { defaultFromColumn } from '../../src/dialects/mysql/drizzle';
@@ -30,6 +31,9 @@ import { DB } from '../../src/utils';
 import { mockResolver } from '../../src/utils/mocks';
 import { tsc } from '../utils';
 import 'zx/globals';
+import { relationsToTypeScript } from 'src/cli/commands/pull-common';
+import { mysqlCommutativity } from 'src/dialects/mysql/commutativity';
+import type { MysqlSnapshot } from 'src/dialects/mysql/snapshot';
 import { expect } from 'vitest';
 
 mkdirSync('tests/mysql/tmp', { recursive: true });
@@ -52,24 +56,23 @@ export const fromEntities = (entities: MysqlEntity[]) => {
 	return ddl;
 };
 
-export const drizzleToDDL = (sch: MysqlSchema, casing?: CasingType | undefined) => {
+export const drizzleToDDL = (sch: MysqlSchema) => {
 	const tables = Object.values(sch).filter((it) => is(it, MySqlTable)) as MySqlTable[];
 	const views = Object.values(sch).filter((it) => is(it, MySqlView)) as MySqlView[];
-	return interimToDDL(fromDrizzleSchema(tables, views, casing));
+	return interimToDDL(fromDrizzleSchema(tables, views));
 };
 
 export const diff = async (
 	left: MysqlSchema | MysqlDDL,
 	right: MysqlSchema | MysqlDDL,
 	renamesArr: string[],
-	casing?: CasingType | undefined,
 ) => {
 	const { ddl: ddl1, errors: err1 } = 'entities' in left && '_' in left
 		? { ddl: left as MysqlDDL, errors: [] }
-		: drizzleToDDL(left, casing);
+		: drizzleToDDL(left);
 	const { ddl: ddl2, errors: err2 } = 'entities' in right && '_' in right
 		? { ddl: right as MysqlDDL, errors: [] }
-		: drizzleToDDL(right, casing);
+		: drizzleToDDL(right);
 
 	const renames = new Set(renamesArr);
 
@@ -85,28 +88,46 @@ export const diff = async (
 		'default',
 	);
 
-	return { sqlStatements, statements, next: ddl2, ddl1Err: err1, ddl2Err: err2, mappedErrors1, mappedErrors2 };
+	const { errors } = diffSuggestions(statements, ddl2);
+
+	return {
+		sqlStatements,
+		statements,
+		next: ddl2,
+		ddl1Err: err1,
+		ddl2Err: err2,
+		mappedErrors1,
+		mappedErrors2,
+		suggestion: { errors },
+	};
 };
 
 export const diffIntrospect = async (
 	db: DB,
 	initSchema: MysqlSchema,
 	testName: string,
-	casing?: CasingType | undefined,
 ) => {
-	const { ddl: initDDL } = drizzleToDDL(initSchema, casing);
+	const { ddl: initDDL } = drizzleToDDL(initSchema);
 	const { sqlStatements: init } = await ddlDiffDry(createDDL(), initDDL);
 	for (const st of init) await db.query(st);
 
 	// introspect to schema
-	const schema = await fromDatabaseForDrizzle(db, 'drizzle');
+	const schema = await fromDatabaseForDrizzle(db, 'drizzle', () => true, () => {}, {
+		schema: 'drizzle',
+		table: '__drizzle_migrations',
+	});
 	const { ddl: ddl1, errors: e1 } = interimToDDL(schema);
 
 	const filePath = `tests/mysql/tmp/${testName}.ts`;
 	const file = ddlToTypeScript(ddl1, schema.viewColumns, 'camel', 'mysql');
+	const filePathRelations = `tests/mysql/tmp/${testName}-relations.ts`;
+	// path
+	const relations = relationsToTypeScript(mysqlToRelationsPull(ddl1), 'camel', `./tests/mysql/tmp/${testName}`);
 
 	writeFileSync(filePath, file.file);
+	writeFileSync(filePathRelations, relations.file);
 	await tsc(file.file);
+	await tsc(relations.file);
 
 	// generate snapshot from ts file
 	const response = await prepareFromSchemaFiles([
@@ -116,7 +137,6 @@ export const diffIntrospect = async (
 	const interim = fromDrizzleSchema(
 		response.tables,
 		response.views,
-		casing,
 	);
 
 	const { ddl: ddl2, errors: e3 } = interimToDDL(interim);
@@ -137,6 +157,7 @@ export const diffIntrospect = async (
 	);
 
 	rmSync(`tests/mysql/tmp/${testName}.ts`);
+	rmSync(`tests/mysql/tmp/${testName}-relations.ts`);
 
 	return {
 		sqlStatements: afterFileSqlStatements,
@@ -149,23 +170,27 @@ export const push = async (config: {
 	db: DB;
 	to: MysqlSchema | MysqlDDL;
 	renames?: string[];
-	casing?: CasingType;
 	log?: 'statements';
 	ignoreSubsequent?: boolean;
+	expectError?: boolean;
+	migrationsConfig?: {
+		table?: string;
+	};
 }) => {
-	const { db, to, log } = config;
-	const casing = config.casing ?? 'camelCase';
+	const { db, to, log, expectError } = config;
 
+	const migrations = configMigrations.parse(config.migrationsConfig);
 	const { schema } = await introspect({
 		db,
 		database: 'drizzle',
 		filter: () => true,
 		progress: new EmptyProgressView(),
+		migrations,
 	});
 	const { ddl: ddl1, errors: err1 } = interimToDDL(schema);
 	const { ddl: ddl2, errors: err2 } = 'entities' in to && '_' in to
 		? { ddl: to as MysqlDDL, errors: [] }
-		: drizzleToDDL(to, casing);
+		: drizzleToDDL(to);
 
 	if (err2.length > 0) {
 		for (const e of err2) {
@@ -191,11 +216,13 @@ export const push = async (config: {
 		'push',
 	);
 
-	const res = await suggestions(db, statements);
+	const res = await suggestions(db, statements, ddl2);
 
 	for (const sql of sqlStatements) {
 		if (log === 'statements') console.log(sql);
-		await db.query(sql);
+		await db.query(sql).catch((err) => {
+			if (!expectError) throw err;
+		});
 	}
 
 	// subsequent push
@@ -206,6 +233,7 @@ export const push = async (config: {
 				database: 'drizzle',
 				filter: () => true,
 				progress: new EmptyProgressView(),
+				migrations,
 			});
 			const { ddl: ddl1, errors: err3 } = interimToDDL(schema);
 			const { sqlStatements, statements } = await ddlDiff(
@@ -245,7 +273,7 @@ export const diffDefault = async <T extends MySqlColumnBuilder>(
 	const type = override?.type ?? column.getSQLType().replace(', ', ','); // real(6, 3)->real(6,3)
 	const ignoreSubsequent = override?.ignoreSubsequent ?? false;
 
-	const columnDefault = defaultFromColumn(column, 'camelCase');
+	const columnDefault = defaultFromColumn(column);
 	const defaultSql = override?.default ?? columnDefault;
 
 	const res = [] as string[];
@@ -268,7 +296,10 @@ export const diffDefault = async <T extends MySqlColumnBuilder>(
 	if (st2.length > 0) res.push(`Unexpected subsequent init:\n${st2}`);
 
 	// introspect to schema
-	const schema = await fromDatabaseForDrizzle(db, 'drizzle');
+	const schema = await fromDatabaseForDrizzle(db, 'drizzle', () => true, () => {}, {
+		schema: 'drizzle',
+		table: '__drizzle_migrations',
+	});
 	const { ddl: ddl1, errors: e1 } = interimToDDL(schema);
 
 	const file = ddlToTypeScript(ddl1, schema.viewColumns, 'camel', 'mysql');
@@ -279,7 +310,7 @@ export const diffDefault = async <T extends MySqlColumnBuilder>(
 	await tsc(file.file);
 
 	const response = await prepareFromSchemaFiles([path]);
-	const sch = fromDrizzleSchema(response.tables, response.views, 'camelCase');
+	const sch = fromDrizzleSchema(response.tables, response.views);
 	const { ddl: ddl2, errors: e3 } = interimToDDL(sch);
 
 	const { sqlStatements: afterFileSqlStatements } = await ddlDiffDry(ddl1, ddl2, 'push');
@@ -366,6 +397,7 @@ export const createDockerDB = async (): Promise<{ url: string; container: Contai
 
 export type TestDatabase = {
 	db: DB;
+	client: Connection;
 	db_url: string;
 	close: () => Promise<void>;
 	clear: () => Promise<void>;
@@ -400,7 +432,7 @@ export const prepareTestDatabase = async (): Promise<TestDatabase> => {
 				await client.query(`create database \`drizzle\`;`);
 				await client.query(`use \`drizzle\`;`);
 			};
-			return { db, close, clear, db_url: url };
+			return { db, close, clear, db_url: url, client };
 		} catch (e) {
 			console.error(e);
 			await new Promise((resolve) => setTimeout(resolve, sleep));
@@ -449,32 +481,20 @@ export async function conflictsFromSchema(
 		child2: SchemaShape;
 	},
 ) {
-	const child1Interim = fromDrizzleSchema(Object.values(child1.schema), [], undefined);
+	const parentInterim = fromDrizzleSchema(Object.values(parent.schema), []);
+	const { ddl: parentDDL } = interimToDDL(parentInterim);
 
-	const child1Snapshot = {
+	const parentSnapshot = {
 		version: '6',
 		dialect: 'mysql',
-		id: child1.id,
-		prevIds: child1.prevId ? [child1.prevId] : [],
-		ddl: interimToDDL(child1Interim).ddl.entities.list(),
+		id: parent.id,
+		prevIds: parent.prevId ? [parent.prevId] : [],
+		ddl: parentDDL.entities.list(),
 		renames: [],
-	} as any;
-
-	const child2Interim = fromDrizzleSchema(Object.values(child2.schema), [], undefined);
-
-	const child2Snapshot = {
-		version: '6',
-		dialect: 'mysql',
-		id: child2.id,
-		prevIds: child2.prevId ? [child2.prevId] : [],
-		ddl: interimToDDL(child2Interim).ddl.entities.list(),
-		renames: [],
-	} as any;
+	} satisfies MysqlSnapshot;
 
 	const { statements: st1 } = await diff(parent.schema, child1.schema, []);
 	const { statements: st2 } = await diff(parent.schema, child2.schema, []);
 
-	const { getReasonsFromStatements } = await import('src/dialects/mysql/commutativity');
-	const r = await getReasonsFromStatements(st1, st2, child1Snapshot, child2Snapshot);
-	return r;
+	return await mysqlCommutativity.getReasonsFromStatements(st1, st2, parentSnapshot);
 }

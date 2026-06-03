@@ -1,5 +1,5 @@
 import { fromDrizzleSchema, prepareFromSchemaFiles } from 'src/dialects/postgres/drizzle';
-import { prepareFilenames, prepareOutFolder } from 'src/utils/utils-node';
+import { prepareOutFolder } from 'src/utils/utils-node';
 import type {
 	CheckConstraint,
 	Column,
@@ -20,15 +20,23 @@ import { createDDL, interimToDDL } from '../../dialects/postgres/ddl';
 import { ddlDiff, ddlDiffDry } from '../../dialects/postgres/diff';
 import { prepareSnapshot } from '../../dialects/postgres/serializer';
 import { resolver } from '../prompts';
-import { explain } from '../views';
+import { explain, postgresSchemaError, postgresSchemaWarning } from '../views';
+import type { CheckHandlerResult } from './check';
 import { writeResult } from './generate-common';
 import type { ExportConfig, GenerateConfig } from './utils';
 
-export const handle = async (config: GenerateConfig) => {
-	const { out: outFolder, schema: schemaPath, casing } = config;
+export const handle = async (
+	config: GenerateConfig,
+	checkResult?: CheckHandlerResult,
+) => {
+	const { out: outFolder, filenames } = config;
 
 	const { snapshots } = prepareOutFolder(outFolder);
-	const { ddlCur, ddlPrev, snapshot, custom } = await prepareSnapshot(snapshots, schemaPath, casing);
+	const { ddlCur, ddlPrev, snapshot, custom } = await prepareSnapshot(
+		snapshots,
+		filenames,
+		checkResult,
+	);
 
 	if (config.custom) {
 		writeResult({
@@ -38,7 +46,6 @@ export const handle = async (config: GenerateConfig) => {
 			name: config.name,
 			breakpoints: config.breakpoints,
 			type: 'custom',
-			prefixMode: config.prefix,
 			renames: [],
 			snapshots,
 		});
@@ -65,7 +72,7 @@ export const handle = async (config: GenerateConfig) => {
 		'default',
 	);
 
-	const explainMessage = explain('mysql', groupedStatements, false, []);
+	const explainMessage = explain('postgres', groupedStatements, false, []);
 	if (explainMessage) console.log(explainMessage);
 
 	writeResult({
@@ -74,18 +81,34 @@ export const handle = async (config: GenerateConfig) => {
 		outFolder,
 		name: config.name,
 		breakpoints: config.breakpoints,
-		prefixMode: config.prefix,
 		renames,
 		snapshots,
 	});
 };
 
 export const handleExport = async (config: ExportConfig) => {
-	const filenames = prepareFilenames(config.schema);
-	const res = await prepareFromSchemaFiles(filenames);
+	const res = await prepareFromSchemaFiles(config.filenames);
 	// TODO: do we wan't to export everything or ignore .existing and respect entity filters in config
-	const { schema } = fromDrizzleSchema(res, config.casing, () => true);
-	const { ddl } = interimToDDL(schema);
+	const { schema, errors, warnings } = fromDrizzleSchema(
+		res,
+		() => true,
+	);
+	if (warnings.length > 0) {
+		console.log(warnings.map((it) => postgresSchemaWarning(it)).join('\n\n'));
+	}
+
+	if (errors.length > 0) {
+		console.log(errors.map((it) => postgresSchemaError(it)).join('\n'));
+		process.exit(1);
+	}
+
+	const { ddl, errors: errors2 } = interimToDDL(schema);
+
+	if (errors2.length > 0) {
+		console.log(errors2.map((it) => postgresSchemaError(it)).join('\n'));
+		process.exit(1);
+	}
+
 	const { sqlStatements } = await ddlDiffDry(createDDL(), ddl, 'default');
 	console.log(sqlStatements.join('\n'));
 };

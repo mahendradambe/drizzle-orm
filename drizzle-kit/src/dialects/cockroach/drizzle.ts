@@ -28,10 +28,8 @@ import {
 	isCockroachSequence,
 	isCockroachView,
 } from 'drizzle-orm/cockroach-core';
-import type { CasingType } from 'src/cli/validations/common';
-import { safeRegister } from 'src/utils/utils-node';
+import { loadModule } from 'src/utils/utils-node';
 import { assertUnreachable } from '../../utils';
-import { getColumnCasing } from '../drizzle';
 import type { EntityFilter } from '../pull-utils';
 import type {
 	CheckConstraint,
@@ -207,14 +205,13 @@ export const fromDrizzleSchema = (
 		views: CockroachView[];
 		matViews: CockroachMaterializedView[];
 	},
-	casing: CasingType | undefined,
 	filter: EntityFilter,
 ): {
 	schema: InterimSchema;
 	errors: SchemaError[];
 	warnings: SchemaWarning[];
 } => {
-	const dialect = new CockroachDialect({ casing });
+	const dialect = new CockroachDialect();
 	const errors: SchemaError[] = [];
 	const warnings: SchemaWarning[] = [];
 
@@ -303,7 +300,7 @@ export const fromDrizzleSchema = (
 
 		res.pks.push(
 			...drizzlePKs.map<PrimaryKey>((pk) => {
-				const columnNames = pk.columns.map((c) => getColumnCasing(c, casing));
+				const columnNames = pk.columns.map((c) => c.name);
 
 				const name = pk.name || defaultNameForPK(tableName);
 				return {
@@ -319,7 +316,7 @@ export const fromDrizzleSchema = (
 
 		res.columns.push(
 			...drizzleColumns.map<InterimColumn>((column) => {
-				const name = getColumnCasing(column, casing);
+				const { name } = column;
 				const notNull = column.notNull;
 
 				const generated = column.generated;
@@ -395,8 +392,8 @@ export const fromDrizzleSchema = (
 				const tableTo = getTableName(reference.foreignTable);
 
 				const schemaTo = getTableConfig(reference.foreignTable).schema || 'public';
-				const columnsFrom = reference.columns.map((it) => getColumnCasing(it, casing));
-				const columnsTo = reference.foreignColumns.map((it) => getColumnCasing(it, casing));
+				const columnsFrom = reference.columns.map((it) => it.name);
+				const columnsTo = reference.foreignColumns.map((it) => it.name);
 
 				const name = fk.getName() || defaultNameForFK(tableName, columnsFrom, tableTo, columnsTo);
 
@@ -439,7 +436,7 @@ export const fromDrizzleSchema = (
 					const sql = dialect.sqlToQuery(c).sql;
 					return { value: sql, isExpression: true, asc: true };
 				}
-				return { value: getColumnCasing(c, casing), isExpression: false, asc: true };
+				return { value: c.name, isExpression: false, asc: true };
 			});
 
 			const name = unique.name
@@ -464,7 +461,7 @@ export const fromDrizzleSchema = (
 				const columns = value.config.columns;
 
 				let indexColumnNames = columns.map((it) => {
-					const name = getColumnCasing(it as IndexedColumn, casing);
+					const name = (it as IndexedColumn).name;
 					return name;
 				});
 
@@ -486,7 +483,7 @@ export const fromDrizzleSchema = (
 
 						const asc = it.indexConfig?.order ? it.indexConfig.order === 'asc' : true;
 						return {
-							value: getColumnCasing(it as IndexedColumn, casing),
+							value: (it as IndexedColumn).name,
 							isExpression: false,
 							asc: asc,
 						} satisfies Index['columns'][number];
@@ -576,7 +573,19 @@ export const fromDrizzleSchema = (
 		});
 	}
 
-	const combinedViews = [...schema.views, ...schema.matViews].map((it) => {
+	const combinedViews = [...schema.views, ...schema.matViews].sort((a, b) => {
+		// see in "./dialects/postgres/drizzle.ts" for more
+		const aConfig = is(a, CockroachView) ? getViewConfig(a) : getMaterializedViewConfig(a);
+		const bConfig = is(b, CockroachView) ? getViewConfig(b) : getMaterializedViewConfig(b);
+
+		// If a's fields include b, a depends on b → b comes first
+		if (aConfig.query?.queryChunks.includes(b)) return 1;
+
+		// If b's fields include a, b depends on a → a comes first
+		if (bConfig.query?.queryChunks.includes(a)) return -1;
+
+		return 0;
+	}).map((it) => {
 		if (is(it, CockroachView)) {
 			return {
 				...getViewConfig(it),
@@ -698,24 +707,22 @@ export const prepareFromSchemaFiles = async (imports: string[]) => {
 	const matViews: CockroachMaterializedView[] = [];
 	const relations: Relations[] = [];
 
-	await safeRegister(async () => {
-		for (let i = 0; i < imports.length; i++) {
-			const it = imports[i];
+	for (let i = 0; i < imports.length; i++) {
+		const it = imports[i];
 
-			const i0: Record<string, unknown> = require(`${it}`);
-			const prepared = fromExports(i0);
+		const i0: Record<string, unknown> = await loadModule(it);
+		const prepared = fromExports(i0);
 
-			tables.push(...prepared.tables);
-			enums.push(...prepared.enums);
-			schemas.push(...prepared.schemas);
-			sequences.push(...prepared.sequences);
-			views.push(...prepared.views);
-			matViews.push(...prepared.matViews);
-			roles.push(...prepared.roles);
-			policies.push(...prepared.policies);
-			relations.push(...prepared.relations);
-		}
-	});
+		tables.push(...prepared.tables);
+		enums.push(...prepared.enums);
+		schemas.push(...prepared.schemas);
+		sequences.push(...prepared.sequences);
+		views.push(...prepared.views);
+		matViews.push(...prepared.matViews);
+		roles.push(...prepared.roles);
+		policies.push(...prepared.policies);
+		relations.push(...prepared.relations);
+	}
 
 	return {
 		tables,

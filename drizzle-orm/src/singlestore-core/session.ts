@@ -3,7 +3,7 @@ import { type Cache, hashQuery, NoopCache } from '~/cache/core/cache.ts';
 import type { WithCacheConfig } from '~/cache/core/types.ts';
 import { entityKind, is } from '~/entity.ts';
 import { DrizzleQueryError, TransactionRollbackError } from '~/errors.ts';
-import type { AnyRelations, EmptyRelations } from '~/relations.ts';
+import type { AnyRelations, EmptyRelations, RelationalQueryMapperConfig } from '~/relations.ts';
 import { type Query, type SQL, sql } from '~/sql/sql.ts';
 import type { Assume, Equal } from '~/utils.ts';
 import { SingleStoreDatabase } from './db.ts';
@@ -58,9 +58,9 @@ export abstract class SingleStorePreparedQuery<T extends SingleStorePreparedQuer
 	) {
 		// it means that no $withCache options were passed and it should be just enabled
 		if (cache && cache.strategy() === 'all' && cacheConfig === undefined) {
-			this.cacheConfig = { enable: true, autoInvalidate: true };
+			this.cacheConfig = { enabled: true, autoInvalidate: true };
 		}
-		if (!this.cacheConfig?.enable) {
+		if (!this.cacheConfig?.enabled) {
 			this.cacheConfig = undefined;
 		}
 	}
@@ -80,7 +80,7 @@ export abstract class SingleStorePreparedQuery<T extends SingleStorePreparedQuer
 		}
 
 		// don't do any mutations, if globally is false
-		if (this.cacheConfig && !this.cacheConfig.enable) {
+		if (this.cacheConfig && !this.cacheConfig.enabled) {
 			try {
 				return await query();
 			} catch (e) {
@@ -200,6 +200,7 @@ export abstract class SingleStoreSession<
 		query: Query,
 		fields: SelectedFieldsOrdered | undefined,
 		customResultMapper: (rows: Record<string, unknown>[]) => T['execute'],
+		config: RelationalQueryMapperConfig,
 		generatedIds?: Record<string, unknown>[],
 		returningIds?: SelectedFieldsOrdered,
 	): PreparedQueryKind<TPreparedQueryHKT, T>;

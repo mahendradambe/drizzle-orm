@@ -1,10 +1,11 @@
 import chalk from 'chalk';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync } from 'fs';
+import { getTsconfig } from 'get-tsconfig';
 import { sync as globSync } from 'glob';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import { snapshotValidator as mysqlSnapshotValidator } from 'src/dialects/mysql/snapshot';
 import { snapshotValidator as singlestoreSnapshotValidator } from 'src/dialects/singlestore/snapshot';
-import { parse } from 'url';
+import { parse, pathToFileURL } from 'url';
 import { error, info } from '../cli/views';
 import { snapshotValidator as cockroachValidator } from '../dialects/cockroach/snapshot';
 import { snapshotValidator as mssqlValidatorSnapshot } from '../dialects/mssql/snapshot';
@@ -21,18 +22,40 @@ export const prepareFilenames = (path: string | string[]) => {
 
 	const prefix = process.env.TEST_CONFIG_PATH_PREFIX || '';
 
+	const skippedFiles: string[] = [];
+
 	const result = path.reduce((result, cur) => {
 		const globbed = globSync(`${prefix}${cur}`);
 
 		for (const it of globbed) {
-			const fileName = lstatSync(it).isDirectory() ? null : resolve(it);
+			const stats = lstatSync(it);
+
+			const fileName = stats.isDirectory() ? null : resolve(it);
 
 			const filenames = fileName
-				? [fileName!]
-				: readdirSync(it).map((file) => join(resolve(it), file));
+				? [{ path: fileName, stat: stats }]
+				: readdirSync(it).map((file) => {
+					const fullPath = join(resolve(it), file);
+					return { path: fullPath, stat: lstatSync(fullPath) };
+				});
 
-			for (const file of filenames.filter((file) => !lstatSync(file).isDirectory())) {
-				result.add(file);
+			for (const { path: file, stat } of filenames) {
+				if (stat.isDirectory()) continue;
+
+				if (
+					file.endsWith('.js')
+					|| file.endsWith('.mjs')
+					|| file.endsWith('.cjs')
+					|| file.endsWith('.jsx')
+					|| file.endsWith('.ts')
+					|| file.endsWith('.mts')
+					|| file.endsWith('.cts')
+					|| file.endsWith('.tsx')
+				) {
+					result.add(file);
+				} else {
+					skippedFiles.push(file);
+				}
 			}
 		}
 
@@ -40,17 +63,10 @@ export const prepareFilenames = (path: string | string[]) => {
 	}, new Set<string>());
 	const res = [...result];
 
-	// TODO: properly handle and test
-	// const errors = res.filter((it) => {
-	// 	return !(
-	// 		it.endsWith('.ts')
-	// 		|| it.endsWith('.js')
-	// 		|| it.endsWith('.cjs')
-	// 		|| it.endsWith('.mjs')
-	// 		|| it.endsWith('.mts')
-	// 		|| it.endsWith('.cts')
-	// 	);
-	// });
+	// TODO can be added. Need approve on this
+	// if (skippedFiles.length > 0) {
+	// 	console.log(info(` ⚠ Skipped ${chalk.blue(skippedFiles.join(', '))} file(s)`));
+	// }
 
 	// when schema: "./schema" and not "./schema.ts"
 	if (res.length === 0) {
@@ -130,9 +146,96 @@ export const prepareOutFolder = (out: string) => {
 	return { snapshots };
 };
 
-type ValidationResult = { status: 'valid' | 'unsupported' | 'nonLatest' } | { status: 'malformed'; errors: string[] };
+const tsconfigAliasCache = new Map<string, Record<string, string> | undefined>();
 
-const assertVersion = (obj: object, current: number): 'unsupported' | 'nonLatest' | null => {
+const getAliasesForTsconfig = (baseDir: string): Record<string, string> | undefined => {
+	const cached = tsconfigAliasCache.get(baseDir);
+	if (cached !== undefined || tsconfigAliasCache.has(baseDir)) {
+		return cached;
+	}
+
+	const tsconfig = getTsconfig(baseDir);
+	const tsconfigPaths = tsconfig?.config?.compilerOptions?.paths as Record<string, string[]> | undefined;
+	if (!tsconfigPaths || !tsconfig?.path) {
+		tsconfigAliasCache.set(baseDir, undefined);
+		return undefined;
+	}
+
+	const tsconfigBaseUrl = tsconfig.config.compilerOptions?.baseUrl ?? '.';
+	const tsconfigDir = dirname(tsconfig.path);
+
+	const aliases = Object.fromEntries(
+		Object.entries(tsconfigPaths).flatMap(([key, values]) => {
+			const targets = (values ?? []).filter((value): value is string => Boolean(value));
+			if (targets.length === 0) return [];
+
+			const hasWildcard = key.includes('*') || targets.some((target) => target.includes('*'));
+			const supportsTrailingWildcard = key.endsWith('/*') && targets.every((target) => target.endsWith('/*'));
+			if (hasWildcard && !supportsTrailingWildcard) {
+				console.warn(
+					chalk.yellow(
+						`[drizzle-kit] Unsupported tsconfig "paths" mapping "${key}": [${
+							targets
+								.map((target) => `"${target}"`)
+								.join(', ')
+						}]. Only trailing "/*" patterns are supported; this mapping will be ignored.`,
+					),
+				);
+				return [];
+			}
+
+			const aliasKey = key.endsWith('/*') ? key.slice(0, -1) : key;
+			const resolvedTargets = targets.map((target) => {
+				if (supportsTrailingWildcard) {
+					const targetPrefix = target.slice(0, -1);
+					return resolve(tsconfigDir, tsconfigBaseUrl, targetPrefix);
+				}
+				return resolve(tsconfigDir, tsconfigBaseUrl, target);
+			});
+
+			const selectedTarget = resolvedTargets.find((candidate) => existsSync(candidate)) ?? resolvedTargets[0]!;
+			return [[aliasKey, selectedTarget]];
+		}),
+	);
+
+	tsconfigAliasCache.set(baseDir, aliases);
+	return aliases;
+};
+
+/**
+ * Reads all snapshot files and returns the IDs of leaf nodes (nodes that are
+ * not referenced as a parent by any other node). When generating a new migration,
+ * these leaf IDs should be used as `prevIds` to merge all open branches.
+ */
+export const findLeafSnapshotIds = (snapshots: string[]): string[] => {
+	if (snapshots.length === 0) return [];
+
+	const allIds = new Set<string>();
+	const referencedAsParent = new Set<string>();
+
+	for (const file of snapshots) {
+		const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+			id: string;
+			prevIds: string[];
+		};
+		allIds.add(raw.id);
+		for (const pid of raw.prevIds) {
+			referencedAsParent.add(pid);
+		}
+	}
+
+	const leafIds = [...allIds].filter((id) => !referencedAsParent.has(id));
+	return leafIds.length > 0 ? leafIds : [Array.from(allIds).pop()!];
+};
+
+type ValidationResult =
+	| { status: 'valid' | 'unsupported' | 'nonLatest' }
+	| { status: 'malformed'; errors: string[] };
+
+const assertVersion = (
+	obj: object,
+	current: number,
+): 'unsupported' | 'nonLatest' | null => {
 	const version = 'version' in obj ? Number(obj['version']) : undefined;
 	if (!version) return 'unsupported';
 	if (version > current) return 'unsupported';
@@ -165,9 +268,7 @@ const cockroachSnapshotValidator = (snapshot: object): ValidationResult => {
 	return { status: 'valid' };
 };
 
-const mysqlValidator = (
-	snapshot: object,
-): ValidationResult => {
+const mysqlValidator = (snapshot: object): ValidationResult => {
 	const versionError = assertVersion(snapshot, 6);
 	if (versionError) return { status: versionError };
 
@@ -177,9 +278,7 @@ const mysqlValidator = (
 	return { status: 'valid' };
 };
 
-const mssqlSnapshotValidator = (
-	snapshot: object,
-): ValidationResult => {
+const mssqlSnapshotValidator = (snapshot: object): ValidationResult => {
 	const versionError = assertVersion(snapshot, 2);
 	if (versionError) return { status: versionError };
 
@@ -189,9 +288,7 @@ const mssqlSnapshotValidator = (
 	return { status: 'valid' };
 };
 
-const sqliteValidator = (
-	snapshot: object,
-): ValidationResult => {
+const sqliteValidator = (snapshot: object): ValidationResult => {
 	const versionError = assertVersion(snapshot, 7);
 	if (versionError) return { status: versionError };
 
@@ -203,9 +300,7 @@ const sqliteValidator = (
 	return { status: 'valid' };
 };
 
-const singlestoreValidator = (
-	snapshot: object,
-): ValidationResult => {
+const singlestoreValidator = (snapshot: object): ValidationResult => {
 	const versionError = assertVersion(snapshot, 2);
 	if (versionError) return { status: versionError };
 
@@ -216,7 +311,9 @@ const singlestoreValidator = (
 	return { status: 'valid' };
 };
 
-export const validatorForDialect = (dialect: Dialect): (snapshot: object) => ValidationResult => {
+export const validatorForDialect = (
+	dialect: Dialect,
+): (snapshot: object) => ValidationResult => {
 	switch (dialect) {
 		case 'postgresql':
 			return postgresValidator;
@@ -232,8 +329,6 @@ export const validatorForDialect = (dialect: Dialect): (snapshot: object) => Val
 			return mssqlSnapshotValidator;
 		case 'cockroach':
 			return cockroachSnapshotValidator;
-		case 'gel':
-			throw Error('gel validator is not implemented yet'); // TODO
 		case 'duckdb':
 			throw Error('duckdb validator is not implemented yet'); // TODO
 		default:
@@ -319,7 +414,11 @@ export const normaliseSQLiteUrl = (
 		}
 	}
 
-	if (type === 'better-sqlite' || type === '@tursodatabase/database' || type === 'bun') {
+	if (
+		type === 'better-sqlite'
+		|| type === '@tursodatabase/database'
+		|| type === 'bun'
+	) {
 		if (it.startsWith('file:')) {
 			return it.substring(5);
 		}
@@ -328,27 +427,6 @@ export const normaliseSQLiteUrl = (
 	}
 
 	assertUnreachable(type);
-};
-
-// NextJs default config is target: es5, which esbuild-register can't consume
-const assertES5 = async () => {
-	try {
-		await import('./_es5');
-	} catch (e: any) {
-		if ('errors' in e && Array.isArray(e.errors) && e.errors.length > 0) {
-			const es5Error = (e.errors as any[]).filter((it) => it.text?.includes(`("es5") is not supported yet`)).length > 0;
-			if (es5Error) {
-				console.log(
-					error(
-						`Please change compilerOptions.target from 'es5' to 'es6' or above in your tsconfig.json`,
-					),
-				);
-				process.exit(1);
-			}
-		}
-		console.error(e);
-		process.exit(1);
-	}
 };
 
 export class InMemoryMutex {
@@ -374,27 +452,51 @@ export class InMemoryMutex {
 	}
 }
 
-const registerMutex = new InMemoryMutex();
+const isBun = typeof (globalThis as any).Bun !== 'undefined';
+const isDeno = typeof (globalThis as any).Deno !== 'undefined';
 
-export const safeRegister = async <T>(fn: () => Promise<T>) => {
-	return registerMutex.withLock(async () => {
-		const { register } = await import('esbuild-register/dist/node');
-		let res: { unregister: () => void };
-		try {
-			const { unregister } = register();
-			res = { unregister };
-		} catch {
-			// tsx fallback
-			res = {
-				unregister: () => {},
-			};
-		}
-		// has to be outside try catch to be able to run with tsx
-		await assertES5();
+export const loadModule = async <T = unknown>(
+	modulePath: string,
+): Promise<T> => {
+	if (isBun || isDeno) {
+		const fileUrl = pathToFileURL(modulePath).href;
+		const mod = await import(fileUrl);
+		return mod.default ?? mod;
+	}
 
-		const result = await fn();
-		res.unregister();
+	const [major, minor] = process.versions.node.split('.').map(Number);
+	const supportsModuleRegister = (major === 18 && minor >= 19)
+		|| (major === 20 && minor >= 6)
+		|| major >= 21;
 
-		return result;
-	});
+	if (!supportsModuleRegister) {
+		console.error(
+			`Node.js ${process.version} does not support the required module.register() API.`,
+		);
+		console.error(`Please upgrade to Node.js v18.19+, v20.6+, or v21+.`);
+		process.exit(1);
+	}
+
+	const path = require('path');
+	const absoluteModulePath = path.isAbsolute(modulePath)
+		? modulePath
+		: path.resolve(modulePath);
+	const ext = path.extname(modulePath);
+	const isTS = ext === '.ts' || ext === '.mts' || ext === '.cts';
+
+	if (isTS) {
+		const baseDir = path.dirname(absoluteModulePath);
+		const aliases = getAliasesForTsconfig(baseDir);
+		// oxlint-disable-next-line consistent-type-imports
+		const { createJiti } = require('jiti') as typeof import('jiti');
+		const jiti = createJiti(baseDir, {
+			interopDefault: true,
+			alias: aliases,
+			requireCache: false,
+		});
+		return jiti.import(absoluteModulePath);
+	}
+	const fileUrl = pathToFileURL(absoluteModulePath).href;
+	const mod = await import(fileUrl);
+	return mod.default ?? mod;
 };

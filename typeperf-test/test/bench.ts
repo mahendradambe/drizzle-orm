@@ -24,6 +24,9 @@ export function runTsDiagnostics(folder: string, file: string, ormVer: 'beta' | 
 			extends: './tsconfig.json',
 			include: [targetPath],
 			exclude: ['./test/*', './lib/*'],
+			compilerOptions: {
+				allowImportingTsExtensions: true,
+			},
 		}),
 	);
 
@@ -69,7 +72,15 @@ export function bench(folder: string, ormVer: 'beta' | 'current', tsVer: 'latest
 					data: parsed,
 				});
 			}
-		} catch {
+		} catch (e) {
+			if (typeof e === 'object') {
+				console.error(
+					(<{ output: (Buffer | undefined)[] }> <any> e).output.filter((e) => !!e).map((e) =>
+						`Case: ${name}\nError: ${e.toString()}`
+					).join('\n'),
+				);
+			}
+
 			errCases.push(name);
 		}
 	}

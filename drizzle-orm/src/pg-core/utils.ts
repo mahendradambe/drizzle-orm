@@ -1,11 +1,13 @@
 import { is } from '~/entity.ts';
 import { PgTable } from '~/pg-core/table.ts';
+import type { AnyRelations } from '~/relations.ts';
 import { SQL } from '~/sql/sql.ts';
 import { Subquery } from '~/subquery.ts';
 import { Table, TableSchema } from '~/table.ts';
+import type { DrizzleConfig } from '~/utils.ts';
 import { ViewBaseConfig } from '~/view-common.ts';
 import { type Check, CheckBuilder } from './checks.ts';
-import type { AnyPgColumn } from './columns/index.ts';
+import type { PgCodecs } from './codecs.ts';
 import { type ForeignKey, ForeignKeyBuilder } from './foreign-keys.ts';
 import type { Index } from './indexes.ts';
 import { IndexBuilder } from './indexes.ts';
@@ -99,8 +101,6 @@ export function getMaterializedViewConfig<
 	};
 }
 
-export type ColumnsWithTable<
-	TTableName extends string,
-	TForeignTableName extends string,
-	TColumns extends AnyPgColumn<{ tableName: TTableName }>[],
-> = { [Key in keyof TColumns]: AnyPgColumn<{ tableName: TForeignTableName }> };
+export type DrizzlePgConfig<TRelations extends AnyRelations> =
+	& Omit<DrizzleConfig<Record<string, never>, TRelations>, 'schema'>
+	& { codecs?: PgCodecs | undefined };

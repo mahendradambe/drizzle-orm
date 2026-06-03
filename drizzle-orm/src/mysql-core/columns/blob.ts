@@ -56,7 +56,9 @@ export class MySqlStringBlob<T extends ColumnBaseConfig<'string'>>
 		return this.blobType;
 	}
 
-	override mapFromDriverValue(value: Buffer | Uint8Array | ArrayBuffer): T['data'] {
+	override mapFromDriverValue = (value: Buffer | Uint8Array | ArrayBuffer | string): T['data'] => {
+		if (typeof value === 'string') return atob(value);
+
 		if (typeof Buffer !== 'undefined' && Buffer.from) {
 			const buf = Buffer.isBuffer(value)
 				? value
@@ -70,7 +72,7 @@ export class MySqlStringBlob<T extends ColumnBaseConfig<'string'>>
 		}
 
 		return textDecoder!.decode(value as ArrayBuffer);
-	}
+	};
 }
 
 export class MySqlBufferBlobBuilder extends MySqlColumnBuilder<
@@ -122,13 +124,15 @@ export class MySqlBufferBlob<T extends ColumnBaseConfig<'object buffer'>>
 		return this.blobType;
 	}
 
-	override mapFromDriverValue(value: Buffer | Uint8Array | ArrayBuffer): T['data'] {
+	override mapFromDriverValue = (value: Buffer | Uint8Array | ArrayBuffer | string): T['data'] => {
+		if (typeof value === 'string') return Buffer.from(value, 'base64');
+
 		if (Buffer.isBuffer(value)) {
 			return value;
 		}
 
 		return Buffer.from(value as Uint8Array);
-	}
+	};
 }
 
 export interface MySqlBlobConfig<

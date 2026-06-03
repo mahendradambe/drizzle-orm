@@ -10,6 +10,7 @@ import {
 	text,
 	timestamp,
 	uuid,
+	varchar,
 } from 'drizzle-orm/pg-core';
 import { afterAll, beforeAll, beforeEach, expect, test } from 'vitest';
 import { diff, prepareTestDatabase, push, TestDatabase } from './mocks';
@@ -134,7 +135,7 @@ test('array #5: multi-dimensional array default', async (t) => {
 	const to = {
 		test: pgTable('test', {
 			id: serial('id').primaryKey(),
-			values: integer('values').array().array().default([[1, 2], [3, 4]]),
+			values: integer('values').array('[][]').default([[1, 2], [3, 4]]),
 		}),
 	};
 
@@ -328,6 +329,22 @@ test('array #12: enum empty array default', async (t) => {
 	const { sqlStatements: pst } = await push({ db, to });
 
 	const st0 = ['ALTER TABLE "test" ADD COLUMN "values" "test_enum"[] DEFAULT \'{a,b}\'::"test_enum"[];'];
+	expect(st).toStrictEqual(st0);
+	expect(pst).toStrictEqual(st0);
+});
+
+// https://github.com/drizzle-team/drizzle-orm/issues/5013
+test('array #13: not null', async (t) => {
+	const to = {
+		test: pgTable('table1', {
+			values: varchar({ length: 20 }).notNull().array(),
+		}),
+	};
+
+	const { sqlStatements: st } = await diff({}, to, []);
+	const { sqlStatements: pst } = await push({ db, to });
+
+	const st0 = ['CREATE TABLE "table1" (\n\t"values" varchar(20)[] NOT NULL\n);\n'];
 	expect(st).toStrictEqual(st0);
 	expect(pst).toStrictEqual(st0);
 });

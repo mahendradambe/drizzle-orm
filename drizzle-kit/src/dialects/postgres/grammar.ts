@@ -268,7 +268,7 @@ export const Char: SqlType = {
 				.replaceAll("'", "''")
 				.replaceAll('\\', '\\\\')
 				.replaceAll('"', '\\"');
-			if (v.includes('\\') || v.includes('"') || v.includes(',')) {
+			if (v.includes('\\') || v.includes('"') || v.includes(',') || v.length === 0) {
 				return `"${escaped}"`;
 			}
 			return escaped;
@@ -815,6 +815,9 @@ export const Uuid: SqlType = {
 
 		value = trimChar(value, "'");
 		if (value === 'gen_random_uuid()') return { options, default: '.defaultRandom()' };
+		if (!value.startsWith("'") && !value.endsWith("'") && value.endsWith('()')) {
+			return { options, default: `sql\`${value}\`` };
+		}
 		return { options, default: `"${trimChar(value, "'")}"` };
 	},
 	toArrayTs: (type, value) => {
@@ -1748,8 +1751,9 @@ export function minRangeForIdentityBasedOn(columnType: string) {
 	subsequent ddl diffs
  */
 export const isSerialExpression = (expr: string, schema: string) => {
-	const schemaPrefix = schema === 'public' ? '' : `${schema}.`;
-	return (expr.startsWith(`nextval('${schemaPrefix}`) || expr.startsWith(`nextval('"${schemaPrefix}`))
+	const schemaPrefix = schema === 'public' ? '' : `${schema}`;
+	return (expr.startsWith(`nextval('${schemaPrefix}`)
+		|| expr.startsWith(`nextval('"${schemaPrefix}"${schemaPrefix ? '.' : ''}`))
 		&& (expr.endsWith(`_seq'::regclass)`) || expr.endsWith(`_seq"'::regclass)`));
 };
 
@@ -1831,7 +1835,8 @@ export const parseOnType = (type: string): OnAction => {
 	}
 };
 
-export const systemNamespaceNames = ['pg_toast', 'pg_catalog', 'information_schema'];
+export const planetscaleNamespaces = ['pscale_extensions'];
+export const systemNamespaceNames = ['pg_toast', 'pg_catalog', 'information_schema', ...planetscaleNamespaces];
 export const isSystemNamespace = (name: string) => {
 	return name.startsWith('pg_toast') || name === 'pg_default' || name === 'pg_global' || name.startsWith('pg_temp_')
 		|| systemNamespaceNames.indexOf(name) >= 0;
@@ -2029,6 +2034,19 @@ export const isDefaultAction = (action: string) => {
 
 export const isSerialType = (type: string) => {
 	return /^(?:serial|bigserial|smallserial)$/i.test(type);
+};
+
+export const mapSerialToInt = (type: string) => {
+	switch (type) {
+		case 'smallserial':
+			return 'smallint';
+		case 'serial':
+			return 'int';
+		case 'bigserial':
+			return 'bigint';
+		default:
+			throw new Error(`Unsupported type: ${type}`);
+	}
 };
 
 // map all to utc with saving precision

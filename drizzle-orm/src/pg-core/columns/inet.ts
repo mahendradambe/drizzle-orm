@@ -1,4 +1,3 @@
-import type { ColumnBaseConfig } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import type { PgTable } from '../table.ts';
 import { PgColumn, PgColumnBuilder } from './common.ts';
@@ -20,8 +19,11 @@ export class PgInetBuilder extends PgColumnBuilder<{
 	}
 }
 
-export class PgInet<T extends ColumnBaseConfig<'string inet'>> extends PgColumn<T> {
+export class PgInet extends PgColumn<'string inet'> {
 	static override readonly [entityKind]: string = 'PgInet';
+
+	/** @internal */
+	override readonly codec = 'inet';
 
 	getSQLType(): string {
 		return 'inet';

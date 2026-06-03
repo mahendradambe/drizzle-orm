@@ -15,7 +15,7 @@
 		},
 		"test:types": {
 			"dependsOn": [
-				"^test:types"
+				"drizzle-orm#build"
 			],
 			"inputs": [
 				"src/**/*.ts",
@@ -23,6 +23,12 @@
 				"tsconfig.json",
 				"tests/tsconfig.json",
 				"../tsconfig.json"
+			],
+			"outputLogs": "new-only"
+		},
+		"build": {
+			"dependsOn": [
+				"drizzle-orm#build"
 			],
 			"outputLogs": "new-only"
 		},
@@ -56,94 +62,6 @@
 			"outputLogs": "new-only"
 		},
 		"drizzle-kit#build": {
-			"dependsOn": [
-				"drizzle-orm#build"
-			],
-			"inputs": [
-				"src/**/*.ts",
-				"package.json",
-				"README.md",
-				"../README.md",
-				"tsconfig.json",
-				"tsconfig.*.json",
-				"tsup.config.ts",
-				"scripts/build.ts",
-				"scripts/fix-imports.ts",
-				"../tsconfig.json"
-			],
-			"outputs": [
-				"dist/**",
-				"dist-dts/**"
-			],
-			"outputLogs": "new-only"
-		},
-		"drizzle-zod#build": {
-			"dependsOn": [
-				"drizzle-orm#build"
-			],
-			"inputs": [
-				"src/**/*.ts",
-				"package.json",
-				"README.md",
-				"../README.md",
-				"tsconfig.json",
-				"tsconfig.*.json",
-				"tsup.config.ts",
-				"scripts/build.ts",
-				"scripts/fix-imports.ts",
-				"../tsconfig.json"
-			],
-			"outputs": [
-				"dist/**",
-				"dist-dts/**"
-			],
-			"outputLogs": "new-only"
-		},
-		"drizzle-typebox#build": {
-			"dependsOn": [
-				"drizzle-orm#build"
-			],
-			"inputs": [
-				"src/**/*.ts",
-				"package.json",
-				"README.md",
-				"../README.md",
-				"tsconfig.json",
-				"tsconfig.*.json",
-				"tsup.config.ts",
-				"scripts/build.ts",
-				"scripts/fix-imports.ts",
-				"../tsconfig.json"
-			],
-			"outputs": [
-				"dist/**",
-				"dist-dts/**"
-			],
-			"outputLogs": "new-only"
-		},
-		"drizzle-valibot#build": {
-			"dependsOn": [
-				"drizzle-orm#build"
-			],
-			"inputs": [
-				"src/**/*.ts",
-				"package.json",
-				"README.md",
-				"../README.md",
-				"tsconfig.json",
-				"tsconfig.*.json",
-				"tsup.config.ts",
-				"scripts/build.ts",
-				"scripts/fix-imports.ts",
-				"../tsconfig.json"
-			],
-			"outputs": [
-				"dist/**",
-				"dist-dts/**"
-			],
-			"outputLogs": "new-only"
-		},
-		"drizzle-arktype#build": {
 			"dependsOn": [
 				"drizzle-orm#build"
 			],
@@ -262,94 +180,6 @@
 			"outputLogs": "new-only"
 		},
 		"drizzle-kit#build:artifact": {
-			"dependsOn": [
-				"drizzle-orm#build:artifact"
-			],
-			"inputs": [
-				"src/**/*.ts",
-				"package.json",
-				"README.md",
-				"../README.md",
-				"tsconfig.json",
-				"tsconfig.*.json",
-				"tsup.config.ts",
-				"scripts/build.ts",
-				"scripts/fix-imports.ts",
-				"../tsconfig.json"
-			],
-			"outputs": [
-				"dist/**",
-				"dist-dts/**"
-			],
-			"outputLogs": "new-only"
-		},
-		"drizzle-zod#build:artifact": {
-			"dependsOn": [
-				"drizzle-orm#build:artifact"
-			],
-			"inputs": [
-				"src/**/*.ts",
-				"package.json",
-				"README.md",
-				"../README.md",
-				"tsconfig.json",
-				"tsconfig.*.json",
-				"tsup.config.ts",
-				"scripts/build.ts",
-				"scripts/fix-imports.ts",
-				"../tsconfig.json"
-			],
-			"outputs": [
-				"dist/**",
-				"dist-dts/**"
-			],
-			"outputLogs": "new-only"
-		},
-		"drizzle-typebox#build:artifact": {
-			"dependsOn": [
-				"drizzle-orm#build:artifact"
-			],
-			"inputs": [
-				"src/**/*.ts",
-				"package.json",
-				"README.md",
-				"../README.md",
-				"tsconfig.json",
-				"tsconfig.*.json",
-				"tsup.config.ts",
-				"scripts/build.ts",
-				"scripts/fix-imports.ts",
-				"../tsconfig.json"
-			],
-			"outputs": [
-				"dist/**",
-				"dist-dts/**"
-			],
-			"outputLogs": "new-only"
-		},
-		"drizzle-valibot#build:artifact": {
-			"dependsOn": [
-				"drizzle-orm#build:artifact"
-			],
-			"inputs": [
-				"src/**/*.ts",
-				"package.json",
-				"README.md",
-				"../README.md",
-				"tsconfig.json",
-				"tsconfig.*.json",
-				"tsup.config.ts",
-				"scripts/build.ts",
-				"scripts/fix-imports.ts",
-				"../tsconfig.json"
-			],
-			"outputs": [
-				"dist/**",
-				"dist-dts/**"
-			],
-			"outputLogs": "new-only"
-		},
-		"drizzle-arktype#build:artifact": {
 			"dependsOn": [
 				"drizzle-orm#build:artifact"
 			],

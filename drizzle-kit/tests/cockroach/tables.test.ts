@@ -1,5 +1,6 @@
 import { SQL, sql } from 'drizzle-orm';
 import {
+	camelCase,
 	cockroachSchema,
 	cockroachTable,
 	cockroachTableCreator,
@@ -8,6 +9,7 @@ import {
 	index,
 	int4,
 	primaryKey,
+	snakeCase,
 	text,
 	unique,
 	uniqueIndex,
@@ -15,6 +17,8 @@ import {
 } from 'drizzle-orm/cockroach-core';
 import { expect } from 'vitest';
 import { diff, push, test } from './mocks';
+
+fs.mkdirSync('./tests/cockroach/migrations', { recursive: true });
 
 test.concurrent('add table #1', async ({ dbc: db }) => {
 	const to = {
@@ -918,7 +922,7 @@ test.concurrent('alter composite primary key', async ({ dbc: db }) => {
 test.concurrent('optional db aliases (snake case)', async ({ dbc: db }) => {
 	const from = {};
 
-	const t1 = cockroachTable(
+	const t1 = snakeCase.table(
 		't1',
 		{
 			t1Id1: int4().notNull().primaryKey(),
@@ -940,14 +944,14 @@ test.concurrent('optional db aliases (snake case)', async ({ dbc: db }) => {
 		],
 	);
 
-	const t2 = cockroachTable(
+	const t2 = snakeCase.table(
 		't2',
 		{
 			t2Id: int4().primaryKey(),
 		},
 	);
 
-	const t3 = cockroachTable(
+	const t3 = snakeCase.table(
 		't3',
 		{
 			t3Id1: int4(),
@@ -962,14 +966,9 @@ test.concurrent('optional db aliases (snake case)', async ({ dbc: db }) => {
 		t3,
 	};
 
-	const casing = 'snake_case';
-	const { sqlStatements: st } = await diff(from, to, [], casing);
+	const { sqlStatements: st } = await diff(from, to, []);
 
-	const { sqlStatements: pst } = await push({
-		db,
-		to,
-		casing,
-	});
+	const { sqlStatements: pst } = await push({ db, to });
 
 	const st1 = `CREATE TABLE "t1" (
 	"t1_id1" int4 PRIMARY KEY,
@@ -1011,7 +1010,7 @@ test.concurrent('optional db aliases (snake case)', async ({ dbc: db }) => {
 test.concurrent('optional db aliases (camel case)', async ({ dbc: db }) => {
 	const from = {};
 
-	const t1 = cockroachTable('t1', {
+	const t1 = camelCase.table('t1', {
 		t1_id1: int4().notNull().primaryKey(),
 		t1_col2: int4().notNull(),
 		t1_col3: int4().notNull(),
@@ -1029,11 +1028,11 @@ test.concurrent('optional db aliases (camel case)', async ({ dbc: db }) => {
 		}),
 	]);
 
-	const t2 = cockroachTable('t2', {
+	const t2 = camelCase.table('t2', {
 		t2_id: int4().primaryKey(),
 	});
 
-	const t3 = cockroachTable('t3', {
+	const t3 = camelCase.table('t3', {
 		t3_id1: int4(),
 		t3_id2: int4(),
 	}, (table) => [primaryKey({ columns: [table.t3_id1, table.t3_id2] })]);
@@ -1044,14 +1043,9 @@ test.concurrent('optional db aliases (camel case)', async ({ dbc: db }) => {
 		t3,
 	};
 
-	const casing = 'camelCase';
-	const { sqlStatements: st } = await diff(from, to, [], casing);
+	const { sqlStatements: st } = await diff(from, to, []);
 
-	const { sqlStatements: pst } = await push({
-		db,
-		to,
-		casing,
-	});
+	const { sqlStatements: pst } = await push({ db, to });
 
 	const st1 = `CREATE TABLE "t1" (
 	"t1Id1" int4 PRIMARY KEY,
@@ -1131,10 +1125,115 @@ test.concurrent('rename table with composite primary key', async ({ dbc: db }) =
 	const { sqlStatements: st } = await diff(schema1, schema2, renames);
 
 	await push({ db, to: schema1 });
-	const { sqlStatements: pst, losses } = await push({ db, to: schema2, renames });
+	const { sqlStatements: pst } = await push({ db, to: schema2, renames });
 
 	const st0: string[] = ['ALTER TABLE "table1" RENAME TO "table2";'];
 
 	expect(st).toStrictEqual(st0);
 	expect(pst).toStrictEqual(st0);
+});
+
+test.concurrent('push after migrate with custom migrations table #1', async ({ db }) => {
+	const migrationsConfig = {
+		schema: undefined,
+		table: undefined,
+	};
+
+	const { migrate } = await import('drizzle-orm/cockroach/migrator');
+	const { drizzle } = await import('drizzle-orm/cockroach');
+	await migrate(drizzle({ client: db.client }), {
+		migrationsSchema: migrationsConfig.schema,
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/cockroach/migrations',
+	});
+
+	const to = {
+		table: cockroachTable('table1', { col1: int4() }),
+	};
+
+	const { sqlStatements: st2 } = await diff({}, to, []);
+	const { sqlStatements: pst2 } = await push({ db, to, migrationsConfig, log: 'statements' });
+	const expectedSt2 = [
+		'CREATE TABLE "table1" (\n\t"col1" int4\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+test.concurrent('push after migrate with custom migrations table #2', async ({ db }) => {
+	const migrationsConfig = {
+		schema: undefined,
+		table: 'migrations',
+	};
+
+	const { migrate } = await import('drizzle-orm/cockroach/migrator');
+	const { drizzle } = await import('drizzle-orm/cockroach');
+	await migrate(drizzle({ client: db.client }), {
+		migrationsSchema: migrationsConfig.schema,
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/cockroach/migrations',
+	});
+
+	const to = {
+		table: cockroachTable('table1', { col1: int4() }),
+	};
+
+	const { sqlStatements: st2 } = await diff({}, to, []);
+	const { sqlStatements: pst2 } = await push({ db, to, migrationsConfig });
+	const expectedSt2 = [
+		'CREATE TABLE "table1" (\n\t"col1" int4\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+test.concurrent('push after migrate with custom migrations table #3', async ({ db }) => {
+	const migrationsConfig = {
+		schema: 'migrations_schema',
+		table: undefined,
+	};
+
+	const { migrate } = await import('drizzle-orm/cockroach/migrator');
+	const { drizzle } = await import('drizzle-orm/cockroach');
+	await migrate(drizzle({ client: db.client }), {
+		migrationsSchema: migrationsConfig.schema,
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/cockroach/migrations',
+	});
+
+	const to = {
+		table: cockroachTable('table1', { col1: int4() }),
+	};
+	const { sqlStatements: st2 } = await diff({}, to, []);
+	const { sqlStatements: pst2 } = await push({ db, to, migrationsConfig });
+	const expectedSt2 = [
+		'CREATE TABLE "table1" (\n\t"col1" int4\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+test.concurrent('push after migrate with custom migrations table #4', async ({ db }) => {
+	const migrationsConfig = {
+		schema: 'migrations_schema',
+		table: 'migrations',
+	};
+	const { migrate } = await import('drizzle-orm/cockroach/migrator');
+	const { drizzle } = await import('drizzle-orm/cockroach');
+	await migrate(drizzle({ client: db.client }), {
+		migrationsSchema: migrationsConfig.schema,
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/cockroach/migrations',
+	});
+
+	const to = {
+		table: cockroachTable('table1', { col1: int4() }),
+	};
+	const { sqlStatements: st2 } = await diff({}, to, []);
+	const { sqlStatements: pst2 } = await push({ db, to, migrationsConfig });
+	const expectedSt2 = [
+		'CREATE TABLE "table1" (\n\t"col1" int4\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
 });

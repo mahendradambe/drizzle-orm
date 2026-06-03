@@ -7,43 +7,47 @@ import { interimToDDL } from 'src/dialects/sqlite/ddl';
 import { ddlDiff } from 'src/dialects/sqlite/diff';
 import { fromDrizzleSchema, prepareFromSchemaFiles } from 'src/dialects/sqlite/drizzle';
 import type { JsonStatement } from 'src/dialects/sqlite/statements';
-import type { SQLiteDB } from '../../utils';
-import { prepareFilenames } from '../../utils/utils-node';
+import type { SQLiteClient } from '../../utils';
 import { highlightSQL } from '../highlighter';
 import { resolver } from '../prompts';
 import { Select } from '../selector-ui';
-import type { EntitiesFilterConfig } from '../validations/cli';
-import type { CasingType } from '../validations/common';
+import type { EntitiesFilterConfig } from '../validations/common';
 import type { SqliteCredentials } from '../validations/sqlite';
-import { explain, ProgressView } from '../views';
+import { explain, ProgressView, sqliteSchemaError } from '../views';
 
 export const handle = async (
-	schemaPath: string | string[],
+	db: SQLiteClient,
+	filenames: string[],
 	verbose: boolean,
 	credentials: SqliteCredentials,
 	filters: EntitiesFilterConfig,
 	force: boolean,
-	casing: CasingType | undefined,
 	explainFlag: boolean,
-	sqliteDB?: SQLiteDB,
+	migrations: {
+		table: string;
+		schema: string;
+	},
 ) => {
-	const { connectToSQLite } = await import('../connections');
 	const { introspect: sqliteIntrospect } = await import('./pull-sqlite');
 
-	const db = sqliteDB ?? await connectToSQLite(credentials);
-	const files = prepareFilenames(schemaPath);
-	const res = await prepareFromSchemaFiles(files);
+	const res = await prepareFromSchemaFiles(filenames);
 
 	const existing = extractSqliteExisting(res.views);
 	const filter = prepareEntityFilter('sqlite', filters, existing);
 
-	const { ddl: ddl2 } = interimToDDL(fromDrizzleSchema(res.tables, res.views, casing));
+	const { ddl: ddl2, errors: errors1 } = interimToDDL(fromDrizzleSchema(res.tables, res.views));
+
+	if (errors1.length > 0) {
+		console.log(errors1.map((it) => sqliteSchemaError(it)).join('\n'));
+		process.exit(1);
+	}
+
 	const progress = new ProgressView(
 		'Pulling schema from database...',
 		'Pulling schema from database...',
 	);
 
-	const { ddl: ddl1 } = await sqliteIntrospect(db, filter, progress);
+	const { ddl: ddl1 } = await sqliteIntrospect(db, filter, progress, () => {}, migrations);
 
 	const { sqlStatements, statements, groupedStatements } = await ddlDiff(
 		ddl1,
@@ -76,35 +80,20 @@ export const handle = async (
 
 	const lossStatements = hints.map((x) => x.statement).filter((x) => typeof x !== 'undefined');
 
-	if (sqlStatements.length === 0) {
-		render(`\n[${chalk.blue('i')}] No changes detected`);
-	} else {
-		if (!('driver' in credentials)) {
-			// D1-HTTP does not support transactions
-			// there might a be a better way to fix this
-			// in the db connection itself
-			const isD1 = 'driver' in credentials && credentials.driver === 'd1-http';
-			if (!isD1) await db.run('begin');
-			try {
-				for (const statement of [...lossStatements, ...sqlStatements]) {
-					if (verbose) console.log(highlightSQL(statement));
+	const allStatements = [...lossStatements, ...sqlStatements];
 
-					await db.run(statement);
-				}
-				if (!isD1) await db.run('commit');
-			} catch (e) {
-				console.error(e);
+	if (verbose) console.log(highlightSQL(allStatements.join('\n')));
 
-				if (!isD1) await db.run('rollback');
-				process.exit(1);
-			}
-		}
-		render(`[${chalk.green('✓')}] Changes applied`);
-	}
+	// no need to re-enable or re-disable PRAGMA foreign_keys, because this config lives per-connection
+	// https://sqlite.org/pragma.html#pragma_foreign_keys
+	// | Changing the foreign_keys setting affects the execution of all statements prepared using the database connection, including those prepared before the setting was changed.
+	await db.batch(allStatements);
+
+	render(`[${chalk.green('✓')}] Changes applied`);
 };
 
 export const suggestions = async (
-	connection: SQLiteDB,
+	connection: SQLiteClient,
 	jsonStatements: JsonStatement[],
 ) => {
 	const grouped: { hint: string; statement?: string }[] = [];

@@ -1,11 +1,10 @@
-import type { ColumnBaseConfig } from '~/column.ts';
 import { entityKind } from '~/entity.ts';
 import type { PgTable } from '~/pg-core/table.ts';
 import { getColumnNameAndConfig } from '~/utils.ts';
 import { PgColumn } from './common.ts';
-import { PgIntColumnBaseBuilder } from './int.common.ts';
+import { PgIntColumnBuilder } from './int.common.ts';
 
-export class PgBigInt53Builder extends PgIntColumnBaseBuilder<{
+export class PgBigInt53Builder extends PgIntColumnBuilder<{
 	dataType: 'number int53';
 	data: number;
 	driverParam: number | string;
@@ -22,22 +21,18 @@ export class PgBigInt53Builder extends PgIntColumnBaseBuilder<{
 	}
 }
 
-export class PgBigInt53<T extends ColumnBaseConfig<'number int53'>> extends PgColumn<T> {
+export class PgBigInt53 extends PgColumn<'number int53'> {
 	static override readonly [entityKind]: string = 'PgBigInt53';
+
+	/** @internal */
+	override readonly codec = 'bigint:number';
 
 	getSQLType(): string {
 		return 'bigint';
 	}
-
-	override mapFromDriverValue(value: number | string): number {
-		if (typeof value === 'number') {
-			return value;
-		}
-		return Number(value);
-	}
 }
 
-export class PgBigInt64Builder extends PgIntColumnBaseBuilder<{
+export class PgBigInt64Builder extends PgIntColumnBuilder<{
 	dataType: 'bigint int64';
 	data: bigint;
 	driverParam: string;
@@ -54,20 +49,18 @@ export class PgBigInt64Builder extends PgIntColumnBaseBuilder<{
 	}
 }
 
-export class PgBigInt64<T extends ColumnBaseConfig<'bigint int64'>> extends PgColumn<T> {
+export class PgBigInt64 extends PgColumn<'bigint int64'> {
 	static override readonly [entityKind]: string = 'PgBigInt64';
+
+	/** @internal */
+	override readonly codec = 'bigint';
 
 	getSQLType(): string {
 		return 'bigint';
 	}
-
-	// eslint-disable-next-line unicorn/prefer-native-coercion-functions
-	override mapFromDriverValue(value: string): bigint {
-		return BigInt(value);
-	}
 }
 
-export class PgBigIntStringBuilder extends PgIntColumnBaseBuilder<{
+export class PgBigIntStringBuilder extends PgIntColumnBuilder<{
 	dataType: 'string int64';
 	data: string;
 	driverParam: string;
@@ -84,17 +77,14 @@ export class PgBigIntStringBuilder extends PgIntColumnBaseBuilder<{
 	}
 }
 
-export class PgBigIntString<T extends ColumnBaseConfig<'string int64'>> extends PgColumn<T> {
+export class PgBigIntString extends PgColumn<'string int64'> {
 	static override readonly [entityKind]: string = 'PgBigIntString';
+
+	/** @internal */
+	override readonly codec = 'bigint:string';
 
 	getSQLType(): string {
 		return 'bigint';
-	}
-
-	override mapFromDriverValue(value: string | number): string {
-		if (typeof value === 'string') return value;
-
-		return String(value);
 	}
 }
 

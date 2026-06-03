@@ -4,6 +4,7 @@ import {
 	binary,
 	blob,
 	boolean,
+	camelCase,
 	char,
 	customType,
 	date,
@@ -26,6 +27,7 @@ import {
 	primaryKey,
 	serial,
 	smallint,
+	snakeCase,
 	text,
 	time,
 	timestamp,
@@ -41,13 +43,17 @@ import {
 import { afterAll, beforeAll, beforeEach, expect, test } from 'vitest';
 import { diff, prepareTestDatabase, push, TestDatabase } from './mocks';
 
+fs.mkdirSync('./tests/mysql/migrations', { recursive: true });
+
 // @vitest-environment-options {"max-concurrency":1}
 let _: TestDatabase;
 let db: TestDatabase['db'];
+let client: TestDatabase['client'];
 
 beforeAll(async () => {
 	_ = await prepareTestDatabase();
 	db = _.db;
+	client = _.client;
 });
 
 afterAll(async () => {
@@ -105,7 +111,7 @@ test('add table #3', async () => {
 	const { sqlStatements: pst } = await push({ db, to });
 
 	const st0: string[] = [
-		'CREATE TABLE `users` (\n\t`id` serial,\n\t`test` varchar(1),\n\tCONSTRAINT `PRIMARY` PRIMARY KEY(`id`,`test`)\n);\n',
+		'CREATE TABLE `users` (\n\t`id` serial,\n\t`test` varchar(1),\n\tCONSTRAINT PRIMARY KEY(`id`,`test`)\n);\n',
 	];
 	expect(st).toStrictEqual(st0);
 	expect(pst).toStrictEqual(st0);
@@ -692,7 +698,7 @@ test('add table #20. table already exists; multiple pk defined', async () => {
 		+ '\n\tCONSTRAINT `column2_unique` UNIQUE INDEX(`column2`)\n);\n',
 		'CREATE TABLE `table2` (\n\t`column1` int AUTO_INCREMENT PRIMARY KEY\n);\n',
 		'CREATE TABLE `table3` (\n\t`column1` int,\n\t`column2` int,\n\t'
-		+ 'CONSTRAINT `PRIMARY` PRIMARY KEY(`column1`,`column2`)\n);\n',
+		+ 'CONSTRAINT PRIMARY KEY(`column1`,`column2`)\n);\n',
 	];
 	expect(st1).toStrictEqual(expectedSt1);
 	expect(pst1).toStrictEqual(expectedSt1);
@@ -1122,7 +1128,7 @@ test('composite primary key #1', async () => {
 	const { sqlStatements: pst } = await push({ db, to });
 
 	const st0: string[] = [
-		'CREATE TABLE `works_to_creators` (\n\t`workId` int NOT NULL,\n\t`creatorId` int NOT NULL,\n\t`classification` varchar(10) NOT NULL,\n\tCONSTRAINT `PRIMARY` PRIMARY KEY(`workId`,`creatorId`,`classification`)\n);\n',
+		'CREATE TABLE `works_to_creators` (\n\t`workId` int NOT NULL,\n\t`creatorId` int NOT NULL,\n\t`classification` varchar(10) NOT NULL,\n\tCONSTRAINT PRIMARY KEY(`workId`,`creatorId`,`classification`)\n);\n',
 	];
 	expect(st).toStrictEqual(st0);
 	expect(pst).toStrictEqual(st0);
@@ -1148,7 +1154,7 @@ test('composite primary key #2', async () => {
 	const { sqlStatements: pst } = await push({ db, to: schema2 });
 
 	const st0: string[] = [
-		'CREATE TABLE `table` (\n\t`col1` int NOT NULL,\n\t`col2` int NOT NULL,\n\tCONSTRAINT `PRIMARY` PRIMARY KEY(`col1`,`col2`)\n);\n',
+		'CREATE TABLE `table` (\n\t`col1` int NOT NULL,\n\t`col2` int NOT NULL,\n\tCONSTRAINT PRIMARY KEY(`col1`,`col2`)\n);\n',
 	];
 	expect(st).toStrictEqual(st0);
 	expect(pst).toStrictEqual(st0);
@@ -1190,7 +1196,7 @@ test('rename table with composite primary key', async () => {
 test('optional db aliases (snake case)', async () => {
 	const from = {};
 
-	const t1 = mysqlTable('t1', {
+	const t1 = snakeCase.table('t1', {
 		t1Id1: int().notNull().primaryKey(),
 		t1Col2: int().notNull(),
 		t1Col3: int().notNull(),
@@ -1208,11 +1214,11 @@ test('optional db aliases (snake case)', async () => {
 		}),
 	]);
 
-	const t2 = mysqlTable('t2', {
+	const t2 = snakeCase.table('t2', {
 		t2Id: serial().primaryKey(),
 	});
 
-	const t3 = mysqlTable('t3', {
+	const t3 = snakeCase.table('t3', {
 		t3Id1: int(),
 		t3Id2: int(),
 	}, (table) => [primaryKey({
@@ -1221,9 +1227,8 @@ test('optional db aliases (snake case)', async () => {
 
 	const to = { t1, t2, t3 };
 
-	const casing = 'snake_case';
-	const { sqlStatements: st } = await diff(from, to, [], casing);
-	const { sqlStatements: pst } = await push({ db, to, casing });
+	const { sqlStatements: st } = await diff(from, to, []);
+	const { sqlStatements: pst } = await push({ db, to });
 
 	const st0: string[] = [
 		`CREATE TABLE \`t1\` (
@@ -1241,7 +1246,7 @@ test('optional db aliases (snake case)', async () => {
 		`CREATE TABLE \`t3\` (
 	\`t3_id1\` int,
 	\`t3_id2\` int,
-	CONSTRAINT \`PRIMARY\` PRIMARY KEY(\`t3_id1\`,\`t3_id2\`)
+	CONSTRAINT PRIMARY KEY(\`t3_id1\`,\`t3_id2\`)
 );\n`,
 		`CREATE INDEX \`t1_idx\` ON \`t1\` (\`t1_idx\`);`,
 		'ALTER TABLE `t1` ADD CONSTRAINT `t1_t2_ref_t2_t2_id_fkey` FOREIGN KEY (`t2_ref`) REFERENCES `t2`(`t2_id`);',
@@ -1254,7 +1259,7 @@ test('optional db aliases (snake case)', async () => {
 test('optional db aliases (camel case)', async () => {
 	const from = {};
 
-	const t1 = mysqlTable('t1', {
+	const t1 = camelCase.table('t1', {
 		t1_id1: int().notNull().primaryKey(),
 		t1_col2: int().notNull(),
 		t1_col3: int().notNull(),
@@ -1272,11 +1277,11 @@ test('optional db aliases (camel case)', async () => {
 		}),
 	]);
 
-	const t2 = mysqlTable('t2', {
+	const t2 = camelCase.table('t2', {
 		t2_id: serial().primaryKey(),
 	});
 
-	const t3 = mysqlTable('t3', {
+	const t3 = camelCase.table('t3', {
 		t3_id1: int(),
 		t3_id2: int(),
 	}, (table) => [primaryKey({
@@ -1289,9 +1294,8 @@ test('optional db aliases (camel case)', async () => {
 		t3,
 	};
 
-	const casing = 'camelCase';
-	const { sqlStatements: st } = await diff(from, to, [], casing);
-	const { sqlStatements: pst } = await push({ db, to, casing });
+	const { sqlStatements: st } = await diff(from, to, []);
+	const { sqlStatements: pst } = await push({ db, to });
 
 	const st0: string[] = [
 		`CREATE TABLE \`t1\` (\n\t\`t1Id1\` int PRIMARY KEY,\n\t\`t1Col2\` int NOT NULL,\n\t\`t1Col3\` int NOT NULL,\n`
@@ -1300,7 +1304,7 @@ test('optional db aliases (camel case)', async () => {
 		+ `\tCONSTRAINT \`t1UniIdx\` UNIQUE INDEX(\`t1UniIdx\`)\n`
 		+ `);\n`,
 		`CREATE TABLE \`t2\` (\n\t\`t2Id\` serial PRIMARY KEY\n);\n`,
-		`CREATE TABLE \`t3\` (\n\t\`t3Id1\` int,\n\t\`t3Id2\` int,\n\tCONSTRAINT \`PRIMARY\` PRIMARY KEY(\`t3Id1\`,\`t3Id2\`)\n);\n`,
+		`CREATE TABLE \`t3\` (\n\t\`t3Id1\` int,\n\t\`t3Id2\` int,\n\tCONSTRAINT PRIMARY KEY(\`t3Id1\`,\`t3Id2\`)\n);\n`,
 		'CREATE INDEX `t1Idx` ON `t1` (`t1Idx`);',
 		'ALTER TABLE `t1` ADD CONSTRAINT `t1_t2Ref_t2_t2Id_fkey` FOREIGN KEY (`t2Ref`) REFERENCES `t2`(`t2Id`);',
 		'ALTER TABLE `t1` ADD CONSTRAINT `t1_t1Col2_t1Col3_t3_t3Id1_t3Id2_fkey` FOREIGN KEY (`t1Col2`,`t1Col3`) REFERENCES `t3`(`t3Id1`,`t3Id2`);',
@@ -1957,7 +1961,7 @@ test(`push-push: check on update now with fsp #2`, async () => {
 
 test('weird serial non-pk', async () => {
 	// old kit was generating serials with autoincrements which is wrong
-	db.query('create table `table`(c1 int not null, c2 serial auto_increment, CONSTRAINT `PRIMARY` PRIMARY KEY(`c1`));');
+	db.query('create table `table`(c1 int not null, c2 serial auto_increment, CONSTRAINT PRIMARY KEY(`c1`));');
 
 	const table = mysqlTable('table', {
 		c1: int().primaryKey(),
@@ -1991,7 +1995,7 @@ test('rename column with pk on another column', async () => {
 	const { sqlStatements: pst1 } = await push({ db, to: schema1 });
 	const expectedSt1 = [
 		'CREATE TABLE `table1` (\n\t`column1` int PRIMARY KEY,\n\t`column2` int\n);\n',
-		'CREATE TABLE `table2` (\n\t`column1` int,\n\t`column2` int,\n\t`column3` int,\n\tCONSTRAINT `PRIMARY` PRIMARY KEY(`column1`,`column2`)\n);\n',
+		'CREATE TABLE `table2` (\n\t`column1` int,\n\t`column2` int,\n\t`column3` int,\n\tCONSTRAINT PRIMARY KEY(`column1`,`column2`)\n);\n',
 	];
 	expect(st1).toStrictEqual(expectedSt1);
 	expect(pst1).toStrictEqual(expectedSt1);
@@ -2149,4 +2153,111 @@ test('case - #5125', async () => {
 	};
 
 	await push({ db, to });
+});
+
+test('push after migrate with custom migrations table #1', async () => {
+	const migrationsConfig = {
+		table: undefined,
+	};
+
+	const { migrate } = await import('drizzle-orm/mysql2/migrator');
+	const { drizzle } = await import('drizzle-orm/mysql2');
+
+	await migrate(drizzle({ client }), {
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/mysql/migrations',
+	});
+
+	const to = {
+		table: mysqlTable('table1', { col1: int() }),
+	};
+
+	const { sqlStatements: st2 } = await diff({}, to, []);
+	const { sqlStatements: pst2 } = await push({ db, to, migrationsConfig });
+	const expectedSt2 = [
+		'CREATE TABLE `table1` (\n\t`col1` int\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+test('push after migrate with custom migrations table #2', async () => {
+	const migrationsConfig = {
+		table: 'migrations',
+	};
+
+	const { migrate } = await import('drizzle-orm/mysql2/migrator');
+	const { drizzle } = await import('drizzle-orm/mysql2');
+
+	await migrate(drizzle({ client }), {
+		migrationsTable: migrationsConfig.table,
+		migrationsFolder: './tests/mysql/migrations',
+	});
+
+	const to = {
+		table: mysqlTable('table1', { col1: int() }),
+	};
+	const { sqlStatements: st2 } = await diff({}, to, []);
+	const { sqlStatements: pst2 } = await push({ db, to, migrationsConfig });
+	const expectedSt2 = [
+		'CREATE TABLE `table1` (\n\t`col1` int\n);\n',
+	];
+	expect(st2).toStrictEqual(expectedSt2);
+	expect(pst2).toStrictEqual(expectedSt2);
+});
+
+test('create table with datetime .onUpdateNow() diff variations', async () => {
+	const to = {
+		users: mysqlTable('users', {
+			col1: datetime().onUpdateNow(),
+			col2: datetime({ fsp: 1 }).onUpdateNow({ fsp: 1 }),
+			col3: datetime({ fsp: 3 }).onUpdateNow({ fsp: 3 }),
+			col4: datetime({ fsp: 6 }).onUpdateNow({ fsp: 6 }),
+			col5: datetime({ mode: 'string' }).onUpdateNow(),
+			col6: datetime({ mode: 'date' }).onUpdateNow(),
+		}),
+	};
+
+	const res = await push({ db, to });
+
+	expect(res.sqlStatements).toStrictEqual([
+		'CREATE TABLE `users` (' + '\n'
+		+ '\t`col1` datetime ON UPDATE CURRENT_TIMESTAMP,' + '\n'
+		+ '\t`col2` datetime(1) ON UPDATE CURRENT_TIMESTAMP(1),' + '\n'
+		+ '\t`col3` datetime(3) ON UPDATE CURRENT_TIMESTAMP(3),' + '\n'
+		+ '\t`col4` datetime(6) ON UPDATE CURRENT_TIMESTAMP(6),' + '\n'
+		+ '\t`col5` datetime,' + '\n'
+		+ '\t`col6` datetime ON UPDATE CURRENT_TIMESTAMP' + '\n'
+		+ ');\n',
+	]);
+});
+
+test('create table with datetime .onUpdateNow() diff variations', async () => {
+	const orders = mysqlTable('orders', {
+		id: int({ unsigned: true }).notNull().primaryKey().autoincrement(),
+		catalog_id: int({ unsigned: true }).notNull().default(0),
+		created_at: timestamp('created_at', { mode: 'date', fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+	}, (table) => [
+		index('orders_created_at').on(table.created_at),
+		index('orders_catalog_id').on(table.catalog_id),
+	]);
+
+	const orderItems = mysqlTable('orderitems', {
+		id: int({ unsigned: true }).notNull().primaryKey().autoincrement(),
+		catalog_id: int({ unsigned: true }).notNull().default(0),
+		order_id: int({ unsigned: true }).notNull(),
+		sku: varchar({ length: 255 }).default('').notNull(),
+	}, (table) => [
+		index('orderitems_order_id').on(table.order_id),
+		index('orderitems_catalog_id').on(table.catalog_id),
+		index('orderitems_sku').on(table.sku),
+		primaryKey({ columns: [table.id] }),
+	]);
+
+	const to = {
+		orders,
+		orderItems,
+	};
+
+	await expect(push({ db, to })).resolves.not.toThrowError();
 });
